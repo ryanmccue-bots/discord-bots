@@ -27,9 +27,9 @@ class LeadStatusView(View):
     async def move_delivered(self, interaction: discord.Interaction, button: Button):
         await move_channel(interaction, "delivered", "📤 Offer Delivered")
 
-    @discord.ui.button(label="❌ Offer Declined",  style=discord.ButtonStyle.danger,    custom_id="move_declined")
+    @discord.ui.button(label="🚫 Offer Declined",  style=discord.ButtonStyle.danger,    custom_id="move_declined")
     async def move_declined(self, interaction: discord.Interaction, button: Button):
-        await move_channel(interaction, "declined", "❌ Offer Declined")
+        await move_channel(interaction, "declined", "🚫 Offer Declined")
 
     @discord.ui.button(label="🥶 Not Interested",  style=discord.ButtonStyle.secondary, custom_id="move_cold")
     async def move_cold(self, interaction: discord.Interaction, button: Button):
@@ -52,6 +52,23 @@ async def move_channel(interaction: discord.Interaction, category_key: str, labe
 
     await channel.edit(category=category)
     await interaction.response.send_message(f"✅ Moved to **{label}** by {interaction.user.mention}", ephemeral=False)
+
+
+# ── Auto-panel on new channel ────────────────────────────────────────────────
+@client.event
+async def on_guild_channel_create(channel):
+    # Only post panel if the new channel is inside one of our lead categories
+    if not isinstance(channel, discord.TextChannel):
+        return
+    if channel.category_id not in CATEGORIES.values():
+        return
+
+    embed = discord.Embed(
+        title="📋 Lead Status",
+        description="Move this lead to a different stage:",
+        color=0x5865F2
+    )
+    await channel.send(embed=embed, view=LeadStatusView())
 
 
 # ── Commands ─────────────────────────────────────────────────────────────────
