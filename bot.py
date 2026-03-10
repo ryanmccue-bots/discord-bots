@@ -62,9 +62,9 @@ class LeadStatusView(View):
     async def move_contract(self, interaction: discord.Interaction, button: Button):
         await move_channel(interaction, "contract", "📝 Under Contract")
 
-    @discord.ui.button(label="🥶 Unqualified", style=discord.ButtonStyle.secondary, custom_id="move_cold")
+    @discord.ui.button(label="🥶 Not Interested", style=discord.ButtonStyle.secondary, custom_id="move_cold")
     async def move_cold(self, interaction: discord.Interaction, button: Button):
-        await move_channel(interaction, "cold", "🥶 Unqualified")
+        await move_channel(interaction, "cold", "🥶 Not Interested")
 
 
 async def move_channel(interaction: discord.Interaction, category_key: str, label: str):
