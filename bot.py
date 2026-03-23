@@ -46,6 +46,29 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 # ── Status panel view (buttons) ──────────────────────────────────────────────
+class ReminderSettingsView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🔔 Reminders On", style=discord.ButtonStyle.success, custom_id="reminders_on")
+    async def reminders_on(self, interaction: discord.Interaction, button: Button):
+        cid = str(interaction.channel.id)
+        if cid not in channel_state:
+            channel_state[cid] = {"category_id": interaction.channel.category_id, "since": time.time(), "last_nudge": 0}
+        channel_state[cid]["reminders_off"] = False
+        save_state(channel_state)
+        await interaction.response.send_message("🔔 Reminders turned **on** for this channel.", ephemeral=True)
+
+    @discord.ui.button(label="🔕 Reminders Off", style=discord.ButtonStyle.secondary, custom_id="reminders_off")
+    async def reminders_off(self, interaction: discord.Interaction, button: Button):
+        cid = str(interaction.channel.id)
+        if cid not in channel_state:
+            channel_state[cid] = {"category_id": interaction.channel.category_id, "since": time.time(), "last_nudge": 0}
+        channel_state[cid]["reminders_off"] = True
+        save_state(channel_state)
+        await interaction.response.send_message("🔕 Reminders turned **off** for this channel.", ephemeral=True)
+
+
 class LeadStatusView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -103,6 +126,9 @@ async def nudge_check():
         if cat_id not in NUDGES:
             continue
 
+        if data.get("reminders_off"):
+            continue
+
         # Fire if 24h has passed since move or last nudge
         trigger_time = max(since, last_nudge) if last_nudge else since
         if now - trigger_time >= interval:
@@ -136,11 +162,19 @@ async def on_guild_channel_create(channel):
     )
     await channel.send(embed=embed, view=LeadStatusView())
 
+    reminder_embed = discord.Embed(
+        title="Reminder Settings",
+        description="Toggle 24-hour nudges for this channel:",
+        color=0x2b2d31
+    )
+    await channel.send(embed=reminder_embed, view=ReminderSettingsView())
+
 
 # ── Commands ─────────────────────────────────────────────────────────────────
 @client.event
 async def on_ready():
     client.add_view(LeadStatusView())
+    client.add_view(ReminderSettingsView())
     nudge_check.start()
     print(f"✅ Logged in as {client.user}")
 
@@ -157,6 +191,15 @@ async def on_message(message: discord.Message):
             color=0x5865F2
         )
         await message.channel.send(embed=embed, view=LeadStatusView())
+        await message.delete()
+
+    if message.content.strip().lower() == "!reminders":
+        embed = discord.Embed(
+            title="Reminder Settings",
+            description="Toggle 24-hour nudges for this channel:",
+            color=0x2b2d31
+        )
+        await message.channel.send(embed=embed, view=ReminderSettingsView())
         await message.delete()
 
 
