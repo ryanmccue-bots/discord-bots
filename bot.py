@@ -22,7 +22,17 @@ NUDGES = {
     CATEGORIES["delivered"]: "Did we lock this up?? 🔒",
 }
 
-NUDGE_INTERVAL_HOURS = 24
+DISPO_ROLE_ID = 1477051979317510246
+DISPO_PERMISSIONS = discord.PermissionOverwrite(
+    view_channel=True,
+    send_messages=True,
+    embed_links=True,
+    attach_files=True,
+    add_reactions=True,
+    read_message_history=True,
+)
+
+
 STATE_FILE = "channel_state.json"
 
 # ── State persistence ────────────────────────────────────────────────────────
@@ -102,6 +112,12 @@ async def move_channel(interaction: discord.Interaction, category_key: str, labe
 
     await channel.edit(category=category)
     await interaction.response.send_message(f"✅ Moved to **{label}** by {interaction.user.mention}")
+
+    # If moved to Under Contract, grant Dispo role access
+    if cat_id == CATEGORIES["contract"]:
+        dispo_role = interaction.guild.get_role(DISPO_ROLE_ID)
+        if dispo_role:
+            await channel.set_permissions(dispo_role, overwrite=DISPO_PERMISSIONS)
 
     # Update state — reset timer when channel is moved
     channel_state[str(channel.id)] = {
