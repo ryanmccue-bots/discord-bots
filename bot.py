@@ -76,7 +76,7 @@ def days_until(d: date):
 def build_calendar_text():
     contracts = calendar_state.get("contracts", {})
     if not contracts:
-        return "📅 **CONTRACT PIPELINE**\n\nNo contracts yet."
+        return "📅 **CONTRACT DEADLINES**\n\nNo contracts yet."
 
     today = date.today()
     entries = []
@@ -103,7 +103,7 @@ def build_calendar_text():
         else:
             later.append(line)
 
-    lines = ["📅 **CONTRACT PIPELINE**"]
+    lines = ["📅 **CONTRACT DEADLINES**"]
 
     if this_week:
         lines += ["", "🚨 **CLOSING THIS WEEK**", "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬", ""]
