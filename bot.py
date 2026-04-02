@@ -88,28 +88,34 @@ def build_calendar_text():
 
     entries.sort(key=lambda x: x[0])
 
-    closing_soon, next_week, later = [], [], []
+    this_week, this_month, later = [], [], []
     for closing, cid, data in entries:
         diff = days_until(closing)
         if diff < 0:
             continue  # past closing date — remove from list
-        signed  = data.get("signed", "?")
-        name    = data.get("name", "Unknown")
+        signed      = data.get("signed", "?")
         closing_str = closing.strftime("%-m/%-d/%Y") if hasattr(closing, "strftime") else data["closing"]
+        line = f"⏳ **{diff} days** — <#{cid}>\n   Signed {signed}  |  Closes {closing_str}"
         if diff <= 7:
-            closing_soon.append(f"  • {name} | Signed {signed} | Closes {closing_str} | ⏳ **{diff} days**")
-        elif diff <= 14:
-            next_week.append(f"  • {name} | Signed {signed} | Closes {closing_str} | ⏳ **{diff} days**")
+            this_week.append(line)
+        elif closing.month == today.month and closing.year == today.year:
+            this_month.append(line)
         else:
-            later.append(f"  • {name} | Signed {signed} | Closes {closing_str} | ⏳ **{diff} days**")
+            later.append(line)
 
-    lines = ["📅 **CONTRACT PIPELINE**", ""]
-    if closing_soon:
-        lines += ["🚨 **CLOSING SOON**"] + closing_soon + [""]
-    if next_week:
-        lines += ["🟡 **CLOSING NEXT WEEK**"] + next_week + [""]
+    lines = ["📅 **CONTRACT PIPELINE**"]
+
+    if this_week:
+        lines += ["", "🚨 **CLOSING THIS WEEK**", "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬", ""]
+        lines += ["\n\n".join(this_week)]
+
+    if this_month:
+        lines += ["", "🟡 **CLOSING THIS MONTH**", "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬", ""]
+        lines += ["\n\n".join(this_month)]
+
     if later:
-        lines += ["🟢 **CLOSING LATER**"] + later + [""]
+        lines += ["", "🟢 **CLOSING LATER**", "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬", ""]
+        lines += ["\n\n".join(later)]
 
     return "\n".join(lines).strip()
 
