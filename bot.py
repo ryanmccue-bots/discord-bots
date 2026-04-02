@@ -1,9 +1,10 @@
 import discord
-from discord.ui import View, Button
+from discord.ui import View, Button, Modal, TextInput
 from discord.ext import tasks
 import os
 import json
 import time
+from datetime import datetime, date
 
 # ── Config ──────────────────────────────────────────────────────────────────
 TOKEN = os.environ.get("DISCORD_TOKEN")
@@ -16,13 +17,17 @@ CATEGORIES = {
     "cold":      1480607284387250187,
 }
 
-# Categories that trigger nudge messages and what to say
 NUDGES = {
     CATEGORIES["active"]:    "Did you comp this out yet?? DROP THE OFFER! 🔥",
     CATEGORIES["delivered"]: "Did we lock this up?? 🔒",
 }
 
-DISPO_ROLE_ID = 1477051979317510246
+DISPO_ROLE_ID      = 1477051979317510246
+CALENDAR_CHANNEL_ID = 1489343322798559242
+NUDGE_INTERVAL_HOURS = 24
+STATE_FILE    = "channel_state.json"
+CALENDAR_FILE = "calendar_state.json"
+
 DISPO_PERMISSIONS = discord.PermissionOverwrite(
     view_channel=True,
     send_messages=True,
@@ -32,22 +37,23 @@ DISPO_PERMISSIONS = discord.PermissionOverwrite(
     read_message_history=True,
 )
 
-
-STATE_FILE = "channel_state.json"
-
 # ── State persistence ────────────────────────────────────────────────────────
-def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
+def load_json(path):
+    if os.path.exists(path):
+        with open(path, "r") as f:
             return json.load(f)
     return {}
 
-def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
+def save_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f)
 
-# channel_state = { "channel_id": { "category_id": int, "since": float, "last_nudge": float } }
-channel_state = load_state()
+channel_state  = load_json(STATE_FILE)
+calendar_state = load_json(CALENDAR_FILE)
+# calendar_state = {
+#   "message_id": int,
+#   "contracts": { "channel_id": { "name": str, "signed": "MM/DD/YYYY", "closing": "MM/DD/YYYY" } }
+# }
 
 # ── Bot setup ────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -55,7 +61,144 @@ intents.message_content = True
 intents.members = True
 client = discord.Client(intents=intents)
 
-# ── Status panel view (buttons) ──────────────────────────────────────────────
+# ── Calendar helpers ─────────────────────────────────────────────────────────
+def parse_date(s):
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%m-%d-%Y", "%m-%d-%y"):
+        try:
+            return datetime.strptime(s.strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+def days_until(d: date):
+    return (d - date.today()).days
+
+def build_calendar_text():
+    contracts = calendar_state.get("contracts", {})
+    if not contracts:
+        return "📅 **CONTRACT PIPELINE**\n\nNo contracts yet."
+
+    today = date.today()
+    entries = []
+    for cid, data in contracts.items():
+        closing = parse_date(data["closing"])
+        if closing is None:
+            continue
+        entries.append((closing, cid, data))
+
+    entries.sort(key=lambda x: x[0])
+
+    closing_soon, next_week, later = [], [], []
+    for closing, cid, data in entries:
+        diff = days_until(closing)
+        if diff < 0:
+            continue  # past closing date — remove from list
+        signed  = data.get("signed", "?")
+        name    = data.get("name", "Unknown")
+        closing_str = closing.strftime("%-m/%-d/%Y") if hasattr(closing, "strftime") else data["closing"]
+        if diff <= 7:
+            closing_soon.append(f"  • {name} | Signed {signed} | Closes {closing_str} | ⏳ **{diff} days**")
+        elif diff <= 14:
+            next_week.append(f"  • {name} | Signed {signed} | Closes {closing_str} | ⏳ **{diff} days**")
+        else:
+            later.append(f"  • {name} | Signed {signed} | Closes {closing_str} | ⏳ **{diff} days**")
+
+    lines = ["📅 **CONTRACT PIPELINE**", ""]
+    if closing_soon:
+        lines += ["🚨 **CLOSING SOON**"] + closing_soon + [""]
+    if next_week:
+        lines += ["🟡 **CLOSING NEXT WEEK**"] + next_week + [""]
+    if later:
+        lines += ["🟢 **CLOSING LATER**"] + later + [""]
+
+    return "\n".join(lines).strip()
+
+
+async def update_calendar_message():
+    cal_channel = client.get_channel(CALENDAR_CHANNEL_ID)
+    if cal_channel is None:
+        return
+
+    text = build_calendar_text()
+    msg_id = calendar_state.get("message_id")
+
+    if msg_id:
+        try:
+            msg = await cal_channel.fetch_message(int(msg_id))
+            await msg.edit(content=text)
+            return
+        except discord.NotFound:
+            pass
+
+    # No message yet — post a fresh one
+    msg = await cal_channel.send(text)
+    calendar_state["message_id"] = str(msg.id)
+    save_json(CALENDAR_FILE, calendar_state)
+
+
+# ── Contract date modal ──────────────────────────────────────────────────────
+class ContractDatesModal(Modal, title="Enter Contract Dates"):
+    signed_date  = TextInput(label="Signed Date",  placeholder="MM/DD/YYYY", max_length=10)
+    closing_date = TextInput(label="Closing Date", placeholder="MM/DD/YYYY", max_length=10)
+
+    def __init__(self, channel_name: str, channel_id: str):
+        super().__init__()
+        self.channel_name = channel_name
+        self.channel_id   = channel_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        signed  = self.signed_date.value.strip()
+        closing = self.closing_date.value.strip()
+
+        if parse_date(signed) is None or parse_date(closing) is None:
+            await interaction.response.send_message(
+                "❗ Invalid date format. Please use MM/DD/YYYY.", ephemeral=True
+            )
+            return
+
+        if "contracts" not in calendar_state:
+            calendar_state["contracts"] = {}
+
+        calendar_state["contracts"][self.channel_id] = {
+            "name":    self.channel_name,
+            "signed":  signed,
+            "closing": closing,
+        }
+        save_json(CALENDAR_FILE, calendar_state)
+        await update_calendar_message()
+
+        await interaction.response.send_message(
+            f"✅ Contract dates saved! Signed **{signed}** | Closes **{closing}**", ephemeral=False
+        )
+
+
+# ── Calendar Manager panel ───────────────────────────────────────────────────
+class CalendarManagerView(View):
+    def __init__(self, channel_name: str, channel_id: str):
+        super().__init__(timeout=None)
+        self.channel_name = channel_name
+        self.channel_id   = channel_id
+
+    @discord.ui.button(label="📅 Input Contract Dates", style=discord.ButtonStyle.primary, custom_id="input_dates")
+    async def input_dates(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(
+            ContractDatesModal(self.channel_name, self.channel_id)
+        )
+
+
+# Persistent version of CalendarManagerView (no stored name/id — looks up from channel)
+class CalendarManagerViewPersistent(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="📅 Input Contract Dates", style=discord.ButtonStyle.primary, custom_id="input_dates")
+    async def input_dates(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(
+            ContractDatesModal(interaction.channel.name, str(interaction.channel.id))
+        )
+
+
+# ── Reminder Settings panel ──────────────────────────────────────────────────
 class ReminderSettingsView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -66,7 +209,7 @@ class ReminderSettingsView(View):
         if cid not in channel_state:
             channel_state[cid] = {"category_id": interaction.channel.category_id, "since": time.time(), "last_nudge": 0}
         channel_state[cid]["reminders_off"] = False
-        save_state(channel_state)
+        save_json(STATE_FILE, channel_state)
         await interaction.response.send_message("🔔 Reminders turned **on** for this channel.", ephemeral=True)
 
     @discord.ui.button(label="🔕 Reminders Off", style=discord.ButtonStyle.secondary, custom_id="reminders_off")
@@ -75,10 +218,11 @@ class ReminderSettingsView(View):
         if cid not in channel_state:
             channel_state[cid] = {"category_id": interaction.channel.category_id, "since": time.time(), "last_nudge": 0}
         channel_state[cid]["reminders_off"] = True
-        save_state(channel_state)
+        save_json(STATE_FILE, channel_state)
         await interaction.response.send_message("🔕 Reminders turned **off** for this channel.", ephemeral=True)
 
 
+# ── Lead Status panel ────────────────────────────────────────────────────────
 class LeadStatusView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -113,19 +257,26 @@ async def move_channel(interaction: discord.Interaction, category_key: str, labe
     await channel.edit(category=category)
     await interaction.response.send_message(f"✅ Moved to **{label}** by {interaction.user.mention}")
 
-    # If moved to Under Contract, grant Dispo role access
+    # Grant Dispo role + post Calendar Manager when moved to Under Contract
     if cat_id == CATEGORIES["contract"]:
         dispo_role = interaction.guild.get_role(DISPO_ROLE_ID)
         if dispo_role:
             await channel.set_permissions(dispo_role, overwrite=DISPO_PERMISSIONS)
 
-    # Update state — reset timer when channel is moved
+        cal_embed = discord.Embed(
+            title="Calendar Manager",
+            description="Enter the signed and closing dates for this contract:",
+            color=0xF1C40F
+        )
+        await channel.send(embed=cal_embed, view=CalendarManagerView(channel.name, str(channel.id)))
+
+    # Update nudge state
     channel_state[str(channel.id)] = {
         "category_id": cat_id,
         "since": time.time(),
         "last_nudge": 0
     }
-    save_state(channel_state)
+    save_json(STATE_FILE, channel_state)
 
 
 # ── 24-hour nudge task ───────────────────────────────────────────────────────
@@ -141,18 +292,22 @@ async def nudge_check():
 
         if cat_id not in NUDGES:
             continue
-
         if data.get("reminders_off"):
             continue
 
-        # Fire if 24h has passed since move or last nudge
         trigger_time = max(since, last_nudge) if last_nudge else since
         if now - trigger_time >= interval:
             channel = client.get_channel(int(channel_id))
             if channel:
                 await channel.send(f"⏰ {NUDGES[cat_id]}")
                 channel_state[channel_id]["last_nudge"] = now
-                save_state(channel_state)
+                save_json(STATE_FILE, channel_state)
+
+
+# ── Daily calendar refresh ───────────────────────────────────────────────────
+@tasks.loop(hours=24)
+async def refresh_calendar():
+    await update_calendar_message()
 
 
 # ── Auto-panel on new channel ────────────────────────────────────────────────
@@ -163,13 +318,12 @@ async def on_guild_channel_create(channel):
     if channel.category_id not in CATEGORIES.values():
         return
 
-    # Track the new channel
     channel_state[str(channel.id)] = {
         "category_id": channel.category_id,
         "since": time.time(),
         "last_nudge": 0
     }
-    save_state(channel_state)
+    save_json(STATE_FILE, channel_state)
 
     embed = discord.Embed(
         title="Lead Status",
@@ -191,7 +345,9 @@ async def on_guild_channel_create(channel):
 async def on_ready():
     client.add_view(LeadStatusView())
     client.add_view(ReminderSettingsView())
+    client.add_view(CalendarManagerViewPersistent())
     nudge_check.start()
+    refresh_calendar.start()
     print(f"✅ Logged in as {client.user}")
 
 
@@ -216,6 +372,15 @@ async def on_message(message: discord.Message):
             color=0x2b2d31
         )
         await message.channel.send(embed=embed, view=ReminderSettingsView())
+        await message.delete()
+
+    if message.content.strip().lower() == "!calendar":
+        embed = discord.Embed(
+            title="Calendar Manager",
+            description="Enter the signed and closing dates for this contract:",
+            color=0xF1C40F
+        )
+        await message.channel.send(embed=embed, view=CalendarManagerView(message.channel.name, str(message.channel.id)))
         await message.delete()
 
 
