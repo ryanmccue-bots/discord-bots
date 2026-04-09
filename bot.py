@@ -4,7 +4,16 @@ from discord.ext import tasks
 import os
 import json
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timezone
+from zoneinfo import ZoneInfo
+
+TIMEZONE = ZoneInfo("America/New_York")
+
+def today_local():
+    return datetime.now(TIMEZONE).date()
+
+def days_until(d: date):
+    return (d - today_local()).days
 
 # ── Config ──────────────────────────────────────────────────────────────────
 TOKEN = os.environ.get("DISCORD_TOKEN")
@@ -78,7 +87,7 @@ def build_calendar_text():
     if not contracts:
         return "📅 **CONTRACT DEADLINES**\n\nNo contracts yet."
 
-    today = date.today()
+    today = today_local()
     entries = []
     for cid, data in contracts.items():
         closing = parse_date(data["closing"])
@@ -378,6 +387,23 @@ async def on_message(message: discord.Message):
             color=0x2b2d31
         )
         await message.channel.send(embed=embed, view=ReminderSettingsView())
+        await message.delete()
+
+    if message.content.strip().lower() == "!cleancalendar":
+        contracts = calendar_state.get("contracts", {})
+        removed = []
+        for cid in list(contracts.keys()):
+            ch = message.guild.get_channel(int(cid))
+            if ch is None:
+                removed.append(cid)
+                del contracts[cid]
+        calendar_state["contracts"] = contracts
+        save_json(CALENDAR_FILE, calendar_state)
+        await update_calendar_message()
+        if removed:
+            await message.channel.send(f"🧹 Removed **{len(removed)}** dead entries and refreshed the calendar.", delete_after=10)
+        else:
+            await message.channel.send("✅ No dead entries found.", delete_after=10)
         await message.delete()
 
     if message.content.strip().lower() == "!calendar":
