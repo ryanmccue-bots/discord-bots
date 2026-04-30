@@ -114,7 +114,7 @@ def build_calendar_text(guild=None):
         if diff < 0:
             continue  # past closing date — remove from list
         signed      = data.get("signed", "?")
-        closing_str = closing.strftime("%-m/%-d/%Y") if hasattr(closing, "strftime") else data["closing"]
+        closing_str = f"{closing.month}/{closing.day}/{closing.year}"
         line = f"⏳ **{diff} days** — <#{cid}>\n   Signed {signed}  |  Closes {closing_str}"
         if diff <= 7:
             this_week.append(line)
