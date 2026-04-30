@@ -82,18 +82,29 @@ def parse_date(s):
 def days_until(d: date):
     return (d - date.today()).days
 
-def build_calendar_text():
+def build_calendar_text(guild=None):
     contracts = calendar_state.get("contracts", {})
     if not contracts:
         return "📅 **CONTRACT DEADLINES**\n\nNo contracts yet."
 
     today = today_local()
     entries = []
+    dead = []
     for cid, data in contracts.items():
+        # Auto-remove if channel no longer exists
+        if guild and guild.get_channel(int(cid)) is None:
+            dead.append(cid)
+            continue
         closing = parse_date(data["closing"])
         if closing is None:
             continue
         entries.append((closing, cid, data))
+
+    # Purge dead entries from state
+    if dead:
+        for cid in dead:
+            del calendar_state["contracts"][cid]
+        save_json(CALENDAR_FILE, calendar_state)
 
     entries.sort(key=lambda x: x[0])
 
@@ -134,7 +145,8 @@ async def update_calendar_message():
     if cal_channel is None:
         return
 
-    text = build_calendar_text()
+    guild = cal_channel.guild
+    text = build_calendar_text(guild)
     msg_id = calendar_state.get("message_id")
 
     if msg_id:
