@@ -284,11 +284,14 @@ async def move_channel(interaction: discord.Interaction, category_key: str, labe
     await channel.edit(category=category)
     await interaction.response.send_message(f"✅ Moved to **{label}** by {interaction.user.mention}")
 
-    # Grant Dispo role + post Calendar Manager when moved to Under Contract
+    # Grant LOVE (Dispo) role + post Calendar Manager when moved to Under Contract
     if cat_id == CATEGORIES["contract"]:
-        dispo_role = interaction.guild.get_role(DISPO_ROLE_ID)
-        if dispo_role:
-            await channel.set_permissions(dispo_role, overwrite=DISPO_PERMISSIONS)
+        EXEMPT_USER_ID = 622805991242596362
+        member_ids = [m.id for m in channel.members]
+        if EXEMPT_USER_ID not in member_ids:
+            dispo_role = interaction.guild.get_role(DISPO_ROLE_ID)
+            if dispo_role:
+                await channel.set_permissions(dispo_role, overwrite=DISPO_PERMISSIONS)
 
         cal_embed = discord.Embed(
             title="Calendar Manager",
