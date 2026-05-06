@@ -240,7 +240,11 @@ def is_watched_channel(channel: discord.TextChannel) -> bool:
 
 COMP_SYSTEM_PROMPT = """You are an elite real estate comping analyst for a real estate wholesaling company.
 You have deep knowledge of professional appraisal methodology, ARV calculation, and MAO formulas.
-You are thorough, conservative, and data-driven. You flag uncertainty honestly."""
+You are thorough, conservative, and data-driven. You flag uncertainty honestly.
+
+CRITICAL: Your response must begin INSTANTLY with the formatted report — starting with the # title header.
+Do NOT write any introductory text, thinking out loud, transition phrases like "Now I have enough data...",
+summaries of your research, or ANY text before the report header. Start with # and nothing else."""
 
 
 def build_comp_prompt(lead: dict, wholesale_fee: int = WHOLESALE_FEE) -> str:
@@ -416,50 +420,95 @@ MAO = (ARV_mid × Investment%) − Repairs_mid − ${wholesale_fee:,} wholesale 
 
 ## OUTPUT FORMAT
 
-Use Discord markdown. Keep it tight — your audience is a sales rep who needs to act fast.
-The report has TWO parts: a summary card (always short) followed by detail sections.
+CRITICAL FORMATTING RULES — follow exactly:
+1. Start INSTANTLY with the # title header. Zero text before it. No preamble, no "Now I have enough data", no summaries. Nothing.
+2. Do NOT include: Weighted ARV Calculation section, scoring breakdown tables, Methodology Notes section. All excluded.
+3. Anything worth noting from methodology or data gaps goes in FLAGS only.
+4. No markdown tables with pipe characters — they render poorly in Discord. Use blockquotes and bullet lines instead.
+5. Use Discord markdown only.
+6. In the COMPS section: one blockquote line per comp, nothing else. No "Zillow shows...", no "Redfin records show...", no explanatory text between comp lines. Data only.
+
+# 🏠 COMP REPORT — {address}
+*{date_str} · Confidence: [HIGH / MEDIUM / LOW / VERY LOW]*
 
 ---
-## ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏠 **COMP REPORT — {address}**
-*{date_str} · Confidence: [HIGH / MEDIUM / LOW / VERY LOW]*
-## ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ## 📋 MAO
-> **$[MAO]** *([X]% of ARV · $[wholesale_fee] fee · $[repairs] repairs)*
-> [One sentence: what's driving the MAO — e.g. "Rural discount applied; weak comps kept investment % conservative."]
+> **$[MAO]** *([X]% of ARV · $12,500 fee · $[repairs] repairs)*
+> [One sentence on what's driving the MAO — e.g. "Rural extension triggered; 65% applied due to Tier 2 comps and thin buyer pool."]
+
+```
+ARV (Mid):        $[X]
+× [X]%:           $[X]
+− Repairs (Mid):  −$[X]
+− Wholesale Fee:  −$12,500
+MAO:              $[X]
+```
+
+[If MAO cannot be calculated: state "⚠️ CANNOT CALCULATE — [reason]" and provide the conditional formula once data is confirmed]
+
+---
 
 ## 💰 ARV
-> **$[ARV_mid]** *(Conservative $[low] – Optimistic $[high])*
-> [One sentence of analysis: e.g. "Three Tier 2 comps averaging $X/sqft after style and age adjustments. Active listing at $X on same street has been sitting — not a reliable ceiling."]
+```
+Conservative:  $[X]
+Most Likely:   $[X]
+Optimistic:    $[X]
+Spread:        [X]% → [HIGH/MEDIUM/LOW/VERY LOW] confidence
+```
+> [One sentence: comp quality, $/sqft basis, active listing ceiling if applied]
+
+---
 
 ## 🔨 CONDITION & REPAIRS
-> Condition: **[X/10]** — [one phrase describing what that score means for this property, e.g. "Dated but livable — cosmetic rehab needed"]
-> Repairs: **$[mid]** *(Low $[low] / High $[high])*
-> [One sentence: what's driving the repair estimate — e.g. "1900 build with updated flooring/bath but likely aging mechanicals and foundation."]
+```
+Condition:  [X/10] — [one phrase, e.g. "Dated but livable"]
+Low:        $[X]
+Mid:        $[X]
+High:       $[X]
+```
+> [One sentence on what's driving the estimate]
+
+---
 
 ## 📊 MARKET
-> [Buyer/Seller/Neutral] · DOM [X] days · Sale-to-list [X]% · [X] months inventory
-> [One sentence on what this means for the deal — e.g. "Market is cooling — DOM rising, use conservative ARV."]
+```
+Type:          [Buyer/Seller/Neutral]
+Avg DOM:       [X] days
+Sale-to-List:  [X]%
+Inventory:     [X] months
+```
+> [One sentence on market implications for this deal]
 
 ---
+
 ## 🏡 COMPS
 
-[Each comp on its own line:]
-> **[Address]** · $[price] · [sqft] sqft · $[X]/sqft · [date] · Score [X]/100[· Tier 2 if applicable]
+[If rural extension applies, one line only: "⚠️ Rural Extension — Tier [X] comps used · No confirmed sold comps within [X] miles"]
 
-**Adjustments applied:**
-> [Bullet — one line each: what was adjusted, ±$amount, why]
+> **[Address]** · $[price] · [sqft] sqft · $[X]/sqft · [Mon YYYY] · Score [X]/100 · [Tier X]
+[One blockquote line per comp. NO explanatory text between comps. NO "Zillow shows...", NO "Redfin records show...". Just the data line.]
 
-**Active listings flagged:**
-> [Any active comp contradicting ARV with DOM and adjusted impact — or "None."]
+**Adjustments:**
+> • [Feature] · ±$[X] · [reason]
+[one bullet per adjustment]
+
+**Active listings:**
+> [Address] — $[X] · [X] days · [ARV impact] — or "None flagged."
 
 ---
-## 🌾 FLAGS *(if applicable)*
-> [Well/septic exposure · buyer pool depth · ADU/zoning upside · rural notes — or omit section entirely if nothing to flag]
+
+## 🚩 FLAGS
+> 🔴 [Critical risk — one line each]
+> 🟡 [Important note — one line each]
+> 🟢 [Upside or positive — one line each]
+[Cover: well/septic exposure with $ estimate, buyer pool depth, rural comp scarcity, ADU/zoning upside.]
+[If data was insufficient to calculate MAO: instead of telling the user to "re-run", provide an inline conditional MAO using your best ARV estimate. Format: "If ARV confirms at $[X] with condition [X]/10: MAO = ($[X] × [X]%) − $[repairs] − $12,500 = **$[MAO]**"]
+[NEVER say "re-run the bot", "run /comp again", or suggest the user provide more data to the bot. Give them the number now.]
+[Omit section entirely if nothing to flag.]
 
 ---
-*⚡ FHB Comp Bot · Always verify before offering*
+*⚡ FHB Comp Bot · Always verify before offering · Confidence: [HIGH / MEDIUM / LOW / VERY LOW]*
 """
 
 
@@ -622,21 +671,11 @@ async def on_guild_channel_create(channel):
 async def comp_slash(
     interaction: discord.Interaction,
     address: str,
-    asking_price: str = "unknown",
-    seller_name: str = "unknown",
 ):
     await interaction.response.send_message(
-        f"🔍 Running comp for `{address}` (Asking: `{asking_price}`)..."
+        f"🔍 Running comp for `{address}`..."
     )
-    lead = {
-        "address": address,
-        "asking_price_raw": asking_price,
-        "seller_name": seller_name,
-    }
-    # Try to parse numeric asking price
-    numeric = re.sub(r"[^\d.]", "", asking_price)
-    if numeric:
-        lead["asking_price"] = float(numeric)
+    lead = {"address": address}
     await post_comp_report(interaction.channel, lead)
 
 
