@@ -263,8 +263,6 @@ def build_comp_prompt(lead: dict, wholesale_fee: int = WHOLESALE_FEE) -> str:
 
 ## SUBJECT PROPERTY
 - Address: {address}
-- Seller: {seller_name}
-- Seller's Asking Price: {asking_str}
 - Beds/Baths: {beds} bed / {baths} bath
 - Sqft: {sqft}
 - Year Built: {year_built}
@@ -397,108 +395,71 @@ Estimate condition 1–10 from listing photos/description:
 - 1–2 (teardown/fire/foundation): $60–$100+/sqft
 - Luxury renovation: $75–$120+/sqft
 
-## STEP 8 — MAO + SENSITIVITY TABLE
+## STEP 8 — MAO CALCULATION
 
-**Market % to use:**
-- Hot seller's: 75–80% | Normal: 70% | Buyer's: 65% | Risky/rural: 60–65%
-- Very rural (30+ min from nearest city): 60%
-- Agricultural zoning: 65%
+**Investment % to use — pick ONE, apply it consistently:**
+
+| Situation | % | Use when |
+|-----------|---|----------|
+| Hot seller's market | 75–80% | <2 months inventory, DOM <20 days |
+| Normal market (FHB default) | 75% | Balanced conditions, urban/suburban |
+| Buyer's market | 70% | DOM rising, inventory 6+ months |
+| Rural (Tier 2–3 comps required, small buyer pool) | 65% | Fewer than 3 comps within 1 mile, rural setting |
+| Very rural (30+ min from nearest city) | 60% | Extreme comp scarcity, agricultural area |
+
+**CRITICAL:** If you triggered the rural extension (Tier 2 or 3 comps), you MUST use 65% or lower — never 75%. These are mutually exclusive. Do not say "rural discount applied" and then use 75%.
 
 **MAO formula:**
 MAO = (ARV_mid × Investment%) − Repairs_mid − ${wholesale_fee:,} wholesale fee
-
-**Sensitivity table:**
-| Scenario | ARV | Repairs | MAO at 70% | Buyer Profit |
-|----------|-----|---------|-----------|-------------|
-| Best case | ARV+5% | Low | calculated | calculated |
-| Base case | ARV_mid | Mid | calculated | calculated |
-| Worst case | ARV-5% | High | calculated | calculated |
-| Disaster | ARV-10% | High+20% | calculated | calculated |
-
-Buyer profit = ARV − Repairs − Closing costs (~8%) − MAO
-
-## NEGOTIATION SUMMARY
-Based on the seller's asking price of {asking_str}:
-
-**Offer bracket:**
-| Level | Formula | Amount |
-|-------|---------|--------|
-| Anchor (open with) | MAO − 10% | $X |
-| Target (ideal) | MAO | $X |
-| Stretch (only if deal has extra value) | MAO + 5% | $X |
-| Walk-Away (absolute ceiling) | MAO + 10% | $X |
-
-**Seller motivation signals:** Assess based on property type, vacancy, listing history, and any details available.
-
-**Verdict on asking price:** Is {asking_str} below Anchor / between Anchor and Target / between Target and Walk-Away / above Walk-Away?
 
 ---
 
 ## OUTPUT FORMAT
 
-Use Discord markdown. Post ALL sections below.
+Use Discord markdown. Keep it tight — your audience is a sales rep who needs to act fast.
+The report has TWO parts: a summary card (always short) followed by detail sections.
 
 ---
-**🏠 COMP REPORT — {address}**
-*Generated {date_str} · Seller: {seller_name} · Asking: {asking_str}*
+## ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏠 **COMP REPORT — {address}**
+*{date_str} · Confidence: [HIGH / MEDIUM / LOW / VERY LOW]*
+## ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**📍 SUBJECT PROPERTY**
-[Address, beds/baths/sqft/year built, lot size, construction, garage, pool, condition score X/10]
+## 📋 MAO
+> **$[MAO]** *([X]% of ARV · $[wholesale_fee] fee · $[repairs] repairs)*
+> [One sentence: what's driving the MAO — e.g. "Rural discount applied; weak comps kept investment % conservative."]
 
-**📊 MARKET CONDITIONS**
-[Market type | Avg DOM | Sale-to-list ratio | Absorption rate | Months of inventory | Pending ratio | Demand level | Trend: bullish/bearish/mixed]
+## 💰 ARV
+> **$[ARV_mid]** *(Conservative $[low] – Optimistic $[high])*
+> [One sentence of analysis: e.g. "Three Tier 2 comps averaging $X/sqft after style and age adjustments. Active listing at $X on same street has been sitting — not a reliable ceiling."]
 
-**🏡 COMPARABLE SALES**
-[Each comp: address, sale price, sqft, $/sqft, date, score/100, tier (1/2/3 if rural), similarity notes]
+## 🔨 CONDITION & REPAIRS
+> Condition: **[X/10]** — [one phrase describing what that score means for this property, e.g. "Dated but livable — cosmetic rehab needed"]
+> Repairs: **$[mid]** *(Low $[low] / High $[high])*
+> [One sentence: what's driving the repair estimate — e.g. "1900 build with updated flooring/bath but likely aging mechanicals and foundation."]
 
-**⚠️ ACTIVE COMP CHECK**
-[Active/pending listings and DOM. Any contradictions flagged with adjusted ARV impact. Or: "No contradictions found."]
-
-**🔧 ADJUSTMENTS APPLIED**
-[Each adjustment: feature, dollar amount, reason]
-
-**💰 ARV**
-Conservative: $[X] | **Most Likely: $[X]** | Optimistic: $[X]
-Spread: [X]% → Confidence: **[HIGH / MEDIUM / LOW / VERY LOW]**
-[2–3 sentence rationale. Note seasonal adjustment if applicable.]
-
-**🔨 REPAIR ESTIMATE**
-Condition: [X/10] — Low: $[X] / Mid: $[X] / High: $[X]
-*(Based on [sqft] sqft × $[X]–$[X]/sqft)*
-
-**📋 MAO CALCULATION**
-Investment %: [X]% ([market type] market)
-ARV $[X] × [X]% = $[X]
-− Repairs (mid): $[X]
-− Wholesale fee: ${wholesale_fee:,}
-**= MAO: $[X]**
-
-**📊 SENSITIVITY TABLE**
-| Scenario | ARV | Repairs | MAO | Buyer Profit |
-|----------|-----|---------|-----|-------------|
-| Best | | | | |
-| Base | | | | |
-| Worst | | | | |
-| Disaster | | | | |
-
-**💬 NEGOTIATION BRIEF**
-Asking: {asking_str}
-Anchor: $[X] | Target: $[X] | Stretch: $[X] | Walk-Away: $[X]
-Verdict: [Asking is below Anchor ✅ / between Anchor–Target ✅ / between Target–Walk-Away ⚠️ / above Walk-Away 🚫]
-Seller motivation signals: [assessment]
-Opening script: "[One sentence tailored to this deal's comp data]"
-
-**🏗️ LAND / ZONING FLAGS** *(if applicable)*
-[ADU potential, addition play, lot split, teardown economics, zoning upside — or "None identified."]
-
-**🌾 RURAL FLAGS** *(if applicable)*
-[Well/septic exposure, buyer pool depth, exit strategy viability — or "N/A — urban/suburban market."]
-
-**✅ GO / 🚫 NO-GO**
-[Clear verdict] — [2–3 sentences on key risks or green flags. Include whether asking price is dealable.]
+## 📊 MARKET
+> [Buyer/Seller/Neutral] · DOM [X] days · Sale-to-list [X]% · [X] months inventory
+> [One sentence on what this means for the deal — e.g. "Market is cooling — DOM rising, use conservative ARV."]
 
 ---
-*⚡ FHB Comp Bot · Always verify comps manually before making an offer · Confidence: [HIGH/MEDIUM/LOW/VERY LOW]*
+## 🏡 COMPS
+
+[Each comp on its own line:]
+> **[Address]** · $[price] · [sqft] sqft · $[X]/sqft · [date] · Score [X]/100[· Tier 2 if applicable]
+
+**Adjustments applied:**
+> [Bullet — one line each: what was adjusted, ±$amount, why]
+
+**Active listings flagged:**
+> [Any active comp contradicting ARV with DOM and adjusted impact — or "None."]
+
+---
+## 🌾 FLAGS *(if applicable)*
+> [Well/septic exposure · buyer pool depth · ADU/zoning upside · rural notes — or omit section entirely if nothing to flag]
+
+---
+*⚡ FHB Comp Bot · Always verify before offering*
 """
 
 
@@ -520,27 +481,47 @@ def run_comp_analysis(address: str, prompt: str) -> str:
         return f"⚠️ Analysis error: {e}"
 
 
-def split_report(report: str, max_len: int = 1990) -> list[str]:
-    """Split a long report into Discord-safe chunks at section headers."""
-    section_starters = ["**🏠", "**📍", "**📊", "**🏡", "**⚠️", "**🔧",
-                        "**💰", "**🔨", "**📋", "**💬", "**🏗️", "**🌾",
-                        "**✅", "**🚫"]
-    chunks, current = [], ""
+def split_report(report: str, max_len: int = 1900) -> list[str]:
+    """
+    Split a long report into Discord-safe chunks.
+    Breaks at section headers (## / --- / **emoji), then falls back to
+    line boundaries, then hard-cuts as a last resort.
+    """
+    import re
+    # Matches both ## headers, --- dividers, and **emoji section starts
+    section_re = re.compile(
+        r"^(?:#{1,3} |---|━+|\*\*[^\w])",
+    )
+
+    chunks = []
+    current = ""
+
     for line in report.split("\n"):
-        is_header = any(line.startswith(h) for h in section_starters)
-        if is_header and len(current) + len(line) > max_len:
-            if current.strip():
-                chunks.append(current.strip())
-            current = line + "\n"
-        elif len(current) + len(line) + 1 > max_len:
+        new_candidate = current + line + "\n"
+        over_limit = len(new_candidate) > max_len
+        is_section = bool(section_re.match(line.strip()))
+
+        if over_limit:
+            # Flush current chunk at a section break or just at the line boundary
             if current.strip():
                 chunks.append(current.strip())
             current = line + "\n"
         else:
-            current += line + "\n"
+            current = new_candidate
+
     if current.strip():
         chunks.append(current.strip())
-    return chunks or [report[:1990]]
+
+    # Final safety pass — guarantee NO chunk exceeds max_len
+    safe = []
+    for chunk in chunks:
+        while len(chunk) > max_len:
+            safe.append(chunk[:max_len])
+            chunk = chunk[max_len:]
+        if chunk.strip():
+            safe.append(chunk)
+
+    return safe or [report[:max_len]]
 
 
 async def post_comp_report(channel: discord.TextChannel, lead: dict):
@@ -551,7 +532,7 @@ async def post_comp_report(channel: discord.TextChannel, lead: dict):
     # Loading message
     loading = await channel.send(
         f"🔍 **Running comp analysis...**\n"
-        f"📍 `{address}` · Asking: `${asking}`\n"
+        f"📍 `{address}`\n"
         f"⏳ Pulling Zillow data — usually 30–60 sec..."
     )
 
