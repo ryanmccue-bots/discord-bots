@@ -508,7 +508,7 @@ def run_comp_analysis(address: str, prompt: str) -> str:
     """Call Claude with web search. Returns the report text."""
     try:
         response = anthropic_client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             max_tokens=4000,
             system=COMP_SYSTEM_PROMPT,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
