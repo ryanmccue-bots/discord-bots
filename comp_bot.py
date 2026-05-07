@@ -426,7 +426,8 @@ CRITICAL FORMATTING RULES — follow exactly:
 3. Anything worth noting from methodology or data gaps goes in FLAGS only.
 4. No markdown tables with pipe characters — they render poorly in Discord. Use blockquotes and bullet lines instead.
 5. Use Discord markdown only.
-6. In the COMPS section: one blockquote line per comp, nothing else. No "Zillow shows...", no "Redfin records show...", no explanatory text between comp lines. Data only.
+6. In the COMPS section: each comp is a blockquote header line followed by a 2-line code block. No "Comp Notes" section. No explanatory text outside the code blocks. No "Zillow shows", no "Redfin records show".
+7. Every flag in FLAGS must fit on ONE line (≤120 chars). Group by color (🔴 then 🟡 then 🟢) with a blank line between each color group. No line breaks within a flag.
 
 # 🏠 COMP REPORT — {address}
 *{date_str} · Confidence: [HIGH / MEDIUM / LOW / VERY LOW]*
@@ -484,28 +485,47 @@ Inventory:     [X] months
 
 ## 🏡 COMPS
 
-[If rural extension applies, one line only: "⚠️ Rural Extension — Tier [X] comps used · No confirmed sold comps within [X] miles"]
+[If rural extension applies, this ONE line only — nothing else:]
+⚠️ Rural Extension — Tier [X] comps · No confirmed sold comps within [X] miles
 
-> **[Address]** · $[price] · [sqft] sqft · $[X]/sqft · [Mon YYYY] · Score [X]/100 · [Tier X]
-[One blockquote line per comp. NO explanatory text between comps. NO "Zillow shows...", NO "Redfin records show...". Just the data line.]
+[For each comp, use this exact pattern — header line then code block:]
+> **[Address]** · Score [X]/100 · Tier [X]
+```
+Sold: $[price] · [Mon YYYY] · [sqft] sqft · $[X]/sqft
+Style: [style] · [beds]bd/[baths]ba · [key feature e.g. "2-car garage · Fully renovated"]
+```
+
+[Repeat that pattern for every comp. NO explanatory text outside the code blocks. NO "Comp Notes" section.]
 
 **Adjustments:**
-> • [Feature] · ±$[X] · [reason]
-[one bullet per adjustment]
+> • [Feature] · ±$[X] · [reason — 8 words max, ONE line]
+[Every adjustment bullet stays on a single line. Cut ruthlessly.]
 
 **Active listings:**
-> [Address] — $[X] · [X] days · [ARV impact] — or "None flagged."
+> [Address] — $[price] · [X] days · [one-line ARV impact]
 
 ---
 
 ## 🚩 FLAGS
-> 🔴 [Critical risk — one line each]
-> 🟡 [Important note — one line each]
-> 🟢 [Upside or positive — one line each]
-[Cover: well/septic exposure with $ estimate, buyer pool depth, rural comp scarcity, ADU/zoning upside.]
-[If data was insufficient to calculate MAO: instead of telling the user to "re-run", provide an inline conditional MAO using your best ARV estimate. Format: "If ARV confirms at $[X] with condition [X]/10: MAO = ($[X] × [X]%) − $[repairs] − $12,500 = **$[MAO]**"]
-[NEVER say "re-run the bot", "run /comp again", or suggest the user provide more data to the bot. Give them the number now.]
-[Omit section entirely if nothing to flag.]
+[HARD RULES:]
+[1. Every individual flag is ONE line only. No exceptions. No line breaks within a flag.]
+[2. Max ~120 characters per flag line including the emoji.]
+[3. Group flags by color with a blank line between each color group.]
+[4. NO "Comp Notes", NO methodology explanations here.]
+
+> 🔴 [Critical risk — one line]
+> 🔴 [Critical risk — one line]
+
+> 🟡 [Important note — one line]
+> 🟡 [Important note — one line]
+
+> 🟢 [Upside/positive — one line]
+> 🟢 [Upside/positive — one line]
+
+[If MAO couldn't be calculated, include as a green flag:]
+> 🟢 Conditional MAO: ARV $[X] @ condition [X]/10 → ($[X] × [X]%) − $[repairs] − $12,500 = **$[MAO]**
+
+[Omit entire section if nothing to flag. Omit any color group if no flags of that type.]
 
 ---
 *⚡ FHB Comp Bot · Always verify before offering · Confidence: [HIGH / MEDIUM / LOW / VERY LOW]*
