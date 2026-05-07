@@ -448,9 +448,7 @@ CRITICAL FORMATTING RULES — follow exactly:
 
 ---
 
-## 📋 MAO
-> **$[MAO]** *([X]% of ARV · $12,500 fee · $[repairs] repairs)*
-> [One sentence on what's driving the MAO — e.g. "Rural extension triggered; 65% applied due to Tier 2 comps and thin buyer pool."]
+## 📋 MAO — $[MAO] *([X]% of ARV · $12,500 fee · $[repairs] repairs)*
 
 ```
 ARV (Mid):        $[X]
@@ -459,8 +457,9 @@ ARV (Mid):        $[X]
 − Wholesale Fee:  −$12,500
 MAO:              $[X]
 ```
+> [One sentence on what's driving the MAO — max 100 chars]
 
-[If MAO cannot be calculated: state "⚠️ CANNOT CALCULATE — [reason]" and provide the conditional formula once data is confirmed]
+[If MAO cannot be calculated: "## 📋 MAO — ⚠️ CANNOT CALCULATE" then code block with conditional formula]
 
 ---
 
@@ -510,19 +509,19 @@ Style: [style] · [beds]bd/[baths]ba · [key feature]
 ```
 > 🔗 [full Zillow or Redfin URL — or "Link not found"]
 
+[Blank line between comps. Repeat pattern for all comps. Then ONE shared adjustments block and ONE active listings block below ALL comps.]
+
 **Adjustments:**
 ```
 • [Feature] · ±$[X] · [reason — max 8 words]
 • [Feature] · ±$[X] · [reason — max 8 words]
 ```
-[One line per adjustment inside the code block. Nothing outside it.]
 
 **Active listings:**
 ```
-[Address] — $[price] · [X] days · [ARV impact — max 60 chars]
-[Address] — $[price] · [X] days · [ARV impact — max 60 chars]
+[Address] — $[price] · [X] days · [ARV impact — max 50 chars]
 ```
-[One line per active listing. "None." if no active listings flagged.]
+[Write "None." inside the code block if no active listings flagged.]
 
 ---
 
