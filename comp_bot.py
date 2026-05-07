@@ -586,25 +586,26 @@ def run_comp_analysis(address: str, prompt: str) -> str:
 def split_report(report: str, max_len: int = 1900) -> list[str]:
     """
     Split a long report into Discord-safe chunks.
-    Breaks at section headers (## / --- / **emoji), then falls back to
-    line boundaries, then hard-cuts as a last resort.
+    Never splits inside a code block — always waits for the closing ``` first.
+    Then breaks at section headers or line boundaries.
+    Final safety pass guarantees no chunk exceeds max_len.
     """
     import re
-    # Matches both ## headers, --- dividers, and **emoji section starts
-    section_re = re.compile(
-        r"^(?:#{1,3} |---|━+|\*\*[^\w])",
-    )
+    section_re = re.compile(r"^(?:#{1,3} |---|━+|\*\*[^\w])")
 
     chunks = []
     current = ""
+    in_code_block = False
 
     for line in report.split("\n"):
-        new_candidate = current + line + "\n"
-        over_limit = len(new_candidate) > max_len
-        is_section = bool(section_re.match(line.strip()))
+        # Track whether we're inside a code block
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
 
-        if over_limit:
-            # Flush current chunk at a section break or just at the line boundary
+        new_candidate = current + line + "\n"
+
+        if len(new_candidate) > max_len and not in_code_block:
+            # Safe to split here — not inside a code block
             if current.strip():
                 chunks.append(current.strip())
             current = line + "\n"
@@ -615,6 +616,7 @@ def split_report(report: str, max_len: int = 1900) -> list[str]:
         chunks.append(current.strip())
 
     # Final safety pass — guarantee NO chunk exceeds max_len
+    # (only triggers if a single unbreakable block is too long)
     safe = []
     for chunk in chunks:
         while len(chunk) > max_len:
