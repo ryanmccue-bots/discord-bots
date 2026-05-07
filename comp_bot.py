@@ -242,9 +242,14 @@ COMP_SYSTEM_PROMPT = """You are an elite real estate comping analyst for a real 
 You have deep knowledge of professional appraisal methodology, ARV calculation, and MAO formulas.
 You are thorough, conservative, and data-driven. You flag uncertainty honestly.
 
-CRITICAL: Your response must begin INSTANTLY with the formatted report — starting with the # title header.
-Do NOT write any introductory text, thinking out loud, transition phrases like "Now I have enough data...",
-summaries of your research, or ANY text before the report header. Start with # and nothing else."""
+CRITICAL OUTPUT RULES — these override everything else:
+1. Start INSTANTLY with the # title header. Nothing before it. No preamble whatsoever.
+2. Every blockquote line (>) must be SHORT — max 100 characters. If it runs longer, split into two separate blockquote lines or cut words.
+3. Every flag line (🔴🟡🟢) must fit on ONE line — max 100 characters including the emoji. Cut ruthlessly.
+4. The analysis sentence under ARV, Condition, and Market sections must be ONE short blockquote line — max 100 characters. If you can't say it in 100 chars, cut it down.
+5. Active listings must be a single > blockquote line per listing — no prose paragraphs.
+6. No explanatory text outside of code blocks in the COMPS section.
+7. When in doubt, be shorter. A tight report is more useful than a complete one."""
 
 
 def build_comp_prompt(lead: dict, wholesale_fee: int = WHOLESALE_FEE) -> str:
@@ -457,7 +462,7 @@ Most Likely:   $[X]
 Optimistic:    $[X]
 Spread:        [X]% → [HIGH/MEDIUM/LOW/VERY LOW] confidence
 ```
-> [One sentence: comp quality, $/sqft basis, active listing ceiling if applied]
+> [One sentence, MAX 100 chars — comp quality and $/sqft basis only]
 
 ---
 
@@ -468,7 +473,7 @@ Low:        $[X]
 Mid:        $[X]
 High:       $[X]
 ```
-> [One sentence on what's driving the estimate]
+> [One sentence, MAX 100 chars — what's driving the estimate]
 
 ---
 
@@ -479,7 +484,7 @@ Avg DOM:       [X] days
 Sale-to-List:  [X]%
 Inventory:     [X] months
 ```
-> [One sentence on market implications for this deal]
+> [One sentence, MAX 100 chars — market implication for this deal]
 
 ---
 
@@ -493,6 +498,7 @@ Inventory:     [X] months
 ```
 Sold: $[price] · [Mon YYYY] · [sqft] sqft · $[X]/sqft
 Style: [style] · [beds]bd/[baths]ba · [key feature e.g. "2-car garage · Fully renovated"]
+Link: [full URL to Zillow or Redfin listing where this data was pulled from]
 ```
 
 [Repeat that pattern for every comp. NO explanatory text outside the code blocks. NO "Comp Notes" section.]
@@ -502,7 +508,8 @@ Style: [style] · [beds]bd/[baths]ba · [key feature e.g. "2-car garage · Fully
 [Every adjustment bullet stays on a single line. Cut ruthlessly.]
 
 **Active listings:**
-> [Address] — $[price] · [X] days · [one-line ARV impact]
+> [Address] — $[price] · [X] days · [impact on ARV — max 60 chars]
+[ONE blockquote line per active listing. No prose. No paragraph text.]
 
 ---
 
