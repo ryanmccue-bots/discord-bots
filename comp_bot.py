@@ -242,14 +242,23 @@ COMP_SYSTEM_PROMPT = """You are an elite real estate comping analyst for a real 
 You have deep knowledge of professional appraisal methodology, ARV calculation, and MAO formulas.
 You are thorough, conservative, and data-driven. You flag uncertainty honestly.
 
-CRITICAL OUTPUT RULES — these override everything else:
-1. Start INSTANTLY with the # title header. Nothing before it. No preamble whatsoever.
-2. Every blockquote line (>) must be SHORT — max 100 characters. If it runs longer, split into two separate blockquote lines or cut words.
-3. Every flag line (🔴🟡🟢) must fit on ONE line — max 100 characters including the emoji. Cut ruthlessly.
-4. The analysis sentence under ARV, Condition, and Market sections must be ONE short blockquote line — max 100 characters. If you can't say it in 100 chars, cut it down.
-5. Active listings must be a single > blockquote line per listing — no prose paragraphs.
-6. No explanatory text outside of code blocks in the COMPS section.
-7. When in doubt, be shorter. A tight report is more useful than a complete one."""
+CRITICAL OUTPUT RULES — these are absolute and override everything else:
+
+1. YOUR RESPONSE MUST START WITH # AND NOTHING ELSE. The very first character of your response must be #. No thinking out loud. No "I'll search...", no "Good data coming in...", no transition sentences. Zero text before the # header. If you write anything before #, you have failed.
+
+2. LINE LENGTH: Every blockquote (>) line and every flag line (🔴🟡🟢) must fit on ONE line, max 100 characters. Count characters. If over 100, cut words until it fits. Never break a flag or blockquote across two lines.
+
+3. COMPS SECTION: Each comp = one > header line + one code block (3 lines: Sold / Style / Link outside). Zero prose between comps. Zero explanatory text outside code blocks. No "Comp Notes". No adjustment prose — adjustments go in the Adjustments bullets only.
+
+4. ADJUSTMENTS: One bullet per line, max 80 characters. No prose sentences after the bullet list. Nothing else in the adjustments section.
+
+5. ACTIVE LISTINGS: One > blockquote line per listing. No prose paragraphs. No sentences outside blockquotes.
+
+6. FLAGS: One line per flag, max 100 chars. Group by color with blank line between groups. Never put the emoji on one line and the text on the next line — they must be on the same line.
+
+7. MARKET SECTION: Use a code block for the data grid. One short > blockquote line for analysis. Nothing else.
+
+8. When in doubt, cut it. A short tight report is better than a complete verbose one."""
 
 
 def build_comp_prompt(lead: dict, wholesale_fee: int = WHOLESALE_FEE) -> str:
@@ -493,44 +502,48 @@ Inventory:     [X] months
 [If rural extension applies, this ONE line only — nothing else:]
 ⚠️ Rural Extension — Tier [X] comps · No confirmed sold comps within [X] miles
 
-[For each comp, use this exact pattern — header line then code block:]
+[For each comp use this EXACT three-part pattern. No variations. No extra text between comps.]
 > **[Address]** · Score [X]/100 · Tier [X]
 ```
 Sold: $[price] · [Mon YYYY] · [sqft] sqft · $[X]/sqft
-Style: [style] · [beds]bd/[baths]ba · [key feature e.g. "2-car garage · Fully renovated"]
-Link: [full URL to Zillow or Redfin listing where this data was pulled from]
+Style: [style] · [beds]bd/[baths]ba · [key feature]
 ```
-
-[Repeat that pattern for every comp. NO explanatory text outside the code blocks. NO "Comp Notes" section.]
+> 🔗 [full Zillow or Redfin URL — or "Link not found"]
 
 **Adjustments:**
-> • [Feature] · ±$[X] · [reason — 8 words max, ONE line]
-[Every adjustment bullet stays on a single line. Cut ruthlessly.]
+```
+• [Feature] · ±$[X] · [reason — max 8 words]
+• [Feature] · ±$[X] · [reason — max 8 words]
+```
+[One line per adjustment inside the code block. Nothing outside it.]
 
 **Active listings:**
-> [Address] — $[price] · [X] days · [impact on ARV — max 60 chars]
-[ONE blockquote line per active listing. No prose. No paragraph text.]
+```
+[Address] — $[price] · [X] days · [ARV impact — max 60 chars]
+[Address] — $[price] · [X] days · [ARV impact — max 60 chars]
+```
+[One line per active listing. "None." if no active listings flagged.]
 
 ---
 
 ## 🚩 FLAGS
-[HARD RULES:]
-[1. Every individual flag is ONE line only. No exceptions. No line breaks within a flag.]
-[2. Max ~120 characters per flag line including the emoji.]
-[3. Group flags by color with a blank line between each color group.]
-[4. NO "Comp Notes", NO methodology explanations here.]
+[ABSOLUTE RULES FOR FLAGS:]
+[- Every flag: emoji + text on THE SAME LINE. Never split. Max 100 chars total.]
+[- If a flag text would make the line over 100 chars: cut words until it fits.]
+[- Group by color. Blank line between each color group.]
+[- No prose sentences. No sub-bullets. No line breaks within any flag.]
 
-> 🔴 [Critical risk — one line]
-> 🔴 [Critical risk — one line]
+> 🔴 [Critical risk — emoji and text on same line, max 100 chars]
+> 🔴 [Critical risk — emoji and text on same line, max 100 chars]
 
-> 🟡 [Important note — one line]
-> 🟡 [Important note — one line]
+> 🟡 [Important note — emoji and text on same line, max 100 chars]
+> 🟡 [Important note — emoji and text on same line, max 100 chars]
 
-> 🟢 [Upside/positive — one line]
-> 🟢 [Upside/positive — one line]
+> 🟢 [Upside/positive — emoji and text on same line, max 100 chars]
+> 🟢 [Upside/positive — emoji and text on same line, max 100 chars]
 
-[If MAO couldn't be calculated, include as a green flag:]
-> 🟢 Conditional MAO: ARV $[X] @ condition [X]/10 → ($[X] × [X]%) − $[repairs] − $12,500 = **$[MAO]**
+[If MAO couldn't be confirmed, one green flag with conditional MAO:]
+> 🟢 Conditional MAO @ condition [X]/10: ($[ARV] × [X]%) − $[repairs] − $12,500 = **$[MAO]**
 
 [Omit entire section if nothing to flag. Omit any color group if no flags of that type.]
 
