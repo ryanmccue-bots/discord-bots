@@ -150,7 +150,7 @@ def parse_tickety_message(content: str) -> dict:
     # ── Address (grab up to 2 lines to handle split addresses) ──────────────
     raw_address = extract_field_lines(
         content,
-        label_pattern=r"street address of the property|property address|address",
+        label_pattern=r"street address of the property|address of the property|property address|address",
         max_lines=2,
     )
 
@@ -585,38 +585,44 @@ def run_comp_analysis(address: str, prompt: str) -> str:
 
 def split_report(report: str, max_len: int = 1900) -> list[str]:
     """
-    Split a long report into Discord-safe chunks.
-    Never splits inside a code block — always waits for the closing ``` first.
-    Then breaks at section headers or line boundaries.
-    Final safety pass guarantees no chunk exceeds max_len.
+    Split report into chunks, with two hard rules:
+    1. Never split inside a code block.
+    2. COMPS and FLAGS sections always start a new message.
+    Then apply max_len splitting within each section-chunk.
     """
     import re
-    section_re = re.compile(r"^(?:#{1,3} |---|━+|\*\*[^\w])")
+
+    # These section headers always force a new message
+    FORCED_BREAKS = {"## 🏡 COMPS", "## 🚩 FLAGS"}
 
     chunks = []
     current = ""
     in_code_block = False
 
     for line in report.split("\n"):
-        # Track whether we're inside a code block
         if line.strip().startswith("```"):
             in_code_block = not in_code_block
 
-        new_candidate = current + line + "\n"
+        # Force a new message at COMPS and FLAGS headers (only if not in code block)
+        is_forced_break = not in_code_block and any(
+            line.strip().startswith(fb) for fb in FORCED_BREAKS
+        )
 
-        if len(new_candidate) > max_len and not in_code_block:
-            # Safe to split here — not inside a code block
+        if is_forced_break:
+            if current.strip():
+                chunks.append(current.strip())
+            current = line + "\n"
+        elif len(current + line + "\n") > max_len and not in_code_block:
             if current.strip():
                 chunks.append(current.strip())
             current = line + "\n"
         else:
-            current = new_candidate
+            current += line + "\n"
 
     if current.strip():
         chunks.append(current.strip())
 
-    # Final safety pass — guarantee NO chunk exceeds max_len
-    # (only triggers if a single unbreakable block is too long)
+    # Final safety pass
     safe = []
     for chunk in chunks:
         while len(chunk) > max_len:
@@ -689,9 +695,15 @@ async def on_guild_channel_create(channel):
         return
 
     # Wait for Tickety to post its message
-    await asyncio.sleep(5)
+    await asyncio.sleep(8)
 
     lead = await extract_lead_data(channel)
+
+    # If no address found, wait a bit longer and try once more
+    # (Tickety may not have posted yet when the channel was created)
+    if not lead or not lead.get("address"):
+        await asyncio.sleep(7)
+        lead = await extract_lead_data(channel)
 
     # No address at all
     if not lead or not lead.get("address"):
