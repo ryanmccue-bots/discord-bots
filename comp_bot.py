@@ -553,6 +553,19 @@ Style: [style] · [beds]bd/[baths]ba · [key feature]
 
 # ── Analysis Runner ───────────────────────────────────────────────────────────
 
+def strip_preamble(text: str) -> str:
+    """
+    Remove any text Claude wrote before the # report header.
+    Finds the first line starting with # and returns everything from there.
+    """
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if line.startswith("# "):
+            return "\n".join(lines[i:])
+    # If no # header found, return as-is
+    return text
+
+
 def run_comp_analysis(address: str, prompt: str) -> str:
     """Call Claude with web search. Returns the report text."""
     try:
@@ -564,7 +577,8 @@ def run_comp_analysis(address: str, prompt: str) -> str:
             messages=[{"role": "user", "content": prompt}],
         )
         parts = [block.text for block in response.content if hasattr(block, "text")]
-        return "\n".join(parts).strip() or "⚠️ No analysis generated — try `/comp` manually."
+        raw = "\n".join(parts).strip()
+        return strip_preamble(raw) or "⚠️ No analysis generated — try `/comp` manually."
     except Exception as e:
         return f"⚠️ Analysis error: {e}"
 
