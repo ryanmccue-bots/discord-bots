@@ -110,22 +110,66 @@ def parse_tickety_message(content: str) -> dict:
     return data
 
 
+def parse_tickety_embed(embed: discord.Embed) -> dict:
+    """Parse lead data from a Tickety embed's fields or description."""
+    data: dict = {}
+    text_parts = []
+
+    # Collect all text from the embed
+    if embed.description:
+        text_parts.append(embed.description)
+    for field in embed.fields:
+        text_parts.append(f"{field.name}\n{field.value}")
+    if embed.footer and embed.footer.text:
+        text_parts.append(embed.footer.text)
+
+    combined = "\n".join(text_parts)
+
+    # Try to extract address
+    raw_address = extract_field_lines(
+        combined,
+        label_pattern=r"street address of the property|address of the property|property address|address",
+        max_lines=2,
+    )
+    if raw_address:
+        normalized = re.sub(r"\s+", " ", raw_address).strip()
+        data["address"] = normalized
+        valid, warning = validate_address(normalized)
+        data["address_valid"] = valid
+        data["address_warning"] = warning
+
+    return data
+
+
 async def extract_lead_data(channel: discord.TextChannel) -> dict | None:
+    async def try_message(msg: discord.Message) -> dict | None:
+        if not is_tickety_message(msg):
+            return None
+        # Try plain text content first
+        if msg.content:
+            data = parse_tickety_message(msg.content)
+            if data.get("address"):
+                return data
+        # Fall back to embeds
+        for embed in msg.embeds:
+            data = parse_tickety_embed(embed)
+            if data.get("address"):
+                return data
+        return None
+
     try:
         pins = await channel.pins()
         for msg in pins:
-            if is_tickety_message(msg) and msg.content:
-                data = parse_tickety_message(msg.content)
-                if data.get("address"):
-                    return data
+            result = await try_message(msg)
+            if result:
+                return result
     except Exception:
         pass
     try:
         async for msg in channel.history(limit=10, oldest_first=True):
-            if is_tickety_message(msg) and msg.content:
-                data = parse_tickety_message(msg.content)
-                if data.get("address"):
-                    return data
+            result = await try_message(msg)
+            if result:
+                return result
     except Exception:
         pass
     return None
