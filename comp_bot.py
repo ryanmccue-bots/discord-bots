@@ -250,7 +250,8 @@ CRITICAL OUTPUT RULES:
 4. COMPS section: header line + code block + link per comp. Zero prose between comps.
 5. Adjustments and Active listings in code blocks.
 6. No Weighted ARV tables. No Methodology Notes. No pipe tables.
-7. When in doubt, be shorter."""
+7. When in doubt, be shorter.
+8. DO NOT include any MAO calculation, MAO calculator, or offer price in your report. The offer is calculated separately by the system. Only provide ARV, repairs, market data, comps, and flags."""
 
 
 def condition_to_score(roof: str, hvac: str, condition: str) -> tuple[int, str]:
@@ -517,24 +518,43 @@ def strip_preamble(text: str) -> str:
 
 
 def split_report(report: str, max_len: int = 1900) -> list[str]:
+    """
+    Split report into Discord-safe chunks with three hard rules:
+    1. Never split inside a code block.
+    2. Never split between a closing ``` and the > 🔗 link line after it.
+    3. COMPS and FLAGS sections always start a new message.
+    """
     FORCED_BREAKS = {"## 🏡 COMPS", "## 🚩 FLAGS"}
+
     chunks = []
     current = ""
     in_code_block = False
+    just_closed_code = False
 
     for line in report.split("\n"):
-        if line.strip().startswith("```"):
-            in_code_block = not in_code_block
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            if in_code_block:
+                in_code_block = False
+                just_closed_code = True
+            else:
+                in_code_block = True
+                just_closed_code = False
+        else:
+            just_closed_code = False
 
         is_forced = not in_code_block and any(
-            line.strip().startswith(fb) for fb in FORCED_BREAKS
+            stripped.startswith(fb) for fb in FORCED_BREAKS
         )
+        is_link_line = stripped.startswith("> 🔗")
+        over_limit = len(current + line + "\n") > max_len
 
         if is_forced:
             if current.strip():
                 chunks.append(current.strip())
             current = line + "\n"
-        elif len(current + line + "\n") > max_len and not in_code_block:
+        elif over_limit and not in_code_block and not just_closed_code and not is_link_line:
             if current.strip():
                 chunks.append(current.strip())
             current = line + "\n"
