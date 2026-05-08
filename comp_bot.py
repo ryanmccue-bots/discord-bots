@@ -139,26 +139,116 @@ def is_watched_channel(channel: discord.TextChannel) -> bool:
 
 
 # ── Survey UI ─────────────────────────────────────────────────────────────────
-# Three separate messages, one per question — cleaner layout in Discord.
+# Single message with all 3 questions — prevents other bots from interleaving.
+# Row 0: Roof label + answers
+# Row 1: HVAC answers
+# Row 2: Condition answers
+# Label buttons (disabled) use row headers in the message text instead.
 
 def _all_answered(channel_id: int) -> bool:
     state = channel_state.get(channel_id, {})
     return all(state.get(k) for k in ["roof", "hvac", "condition"])
 
 
-async def _check_and_fire(channel: discord.abc.Messageable, channel_id: int):
-    """If all three questions answered, kick off comp analysis."""
+async def _check_and_fire(interaction: discord.Interaction, channel_id: int, view: discord.ui.View):
+    """If all three questions answered, lock the view and kick off comp analysis."""
     if _all_answered(channel_id):
         state = channel_state.get(channel_id, {})
+        # Disable all remaining buttons
+        for item in view.children:
+            item.disabled = True
+        summary = (
+            f"🏠 **Condition Survey — {state.get('address', 'unknown address')}**\n"
+            f"✅ All answered — running comp analysis...\n\n"
+            f"🏠 Roof: **{state['roof']}**\n"
+            f"❄️ HVAC: **{state['hvac']}**\n"
+            f"🔨 Condition: **{state['condition']}**"
+        )
+        await interaction.message.edit(content=summary, view=view)
         if not state.get("address"):
-            await channel.send(
-                "✅ **Survey complete** — but no address was found yet.\n"
-                "Use `/comp [full address]` to run the analysis."
+            await interaction.channel.send(
+                "⚠️ No address found — use `/comp [full address]` to run the analysis."
             )
             return
-        await channel.send("✅ **Survey complete — running comp analysis...**")
-        asyncio.create_task(run_and_post_offers(channel))
+        await interaction.channel.send("🔍 Running comp analysis...")
+        asyncio.create_task(run_and_post_offers(interaction.channel))
 
+
+class ConditionSurvey(discord.ui.View):
+    """Single-message survey with all 3 questions in one view."""
+
+    def __init__(self, channel_id: int):
+        super().__init__(timeout=3600)
+        self.channel_id = channel_id
+
+    def _survey_text(self) -> str:
+        state = channel_state.get(self.channel_id, {})
+        address = state.get("address", "")
+        roof = f"**{state['roof']}** ✅" if state.get("roof") else "_tap below_"
+        hvac = f"**{state['hvac']}** ✅" if state.get("hvac") else "_tap below_"
+        cond = f"**{state['condition']}** ✅" if state.get("condition") else "_tap below_"
+        addr_suffix = f" — {address}" if address else ""
+        header = f"🏠 **Condition Survey{addr_suffix}**"
+        return (
+            f"{header}\n"
+            f"\n🏠 **1. Roof:** {roof}"
+            f"\n❄️ **2. HVAC:** {hvac}"
+            f"\n🔨 **3. Condition:** {cond}"
+        )
+
+    async def _pick(self, interaction: discord.Interaction, field: str, value: str):
+        channel_state[self.channel_id][field] = value
+        # Update button styles for this field's row
+        field_rows = {"roof": 0, "hvac": 1, "condition": 2}
+        target_row = field_rows[field]
+        for item in self.children:
+            if item.row == target_row:
+                item.style = discord.ButtonStyle.success if item.label == value else discord.ButtonStyle.secondary
+                item.disabled = True
+        await interaction.response.edit_message(content=self._survey_text(), view=self)
+        await _check_and_fire(interaction, self.channel_id, self)
+
+    # ── Roof (row 0) ──────────────────────────────────────────────────────────
+    @discord.ui.button(label="New", style=discord.ButtonStyle.primary, row=0)
+    async def roof_new(self, i: discord.Interaction, b: discord.ui.Button):
+        await self._pick(i, "roof", "New")
+
+    @discord.ui.button(label="Good", style=discord.ButtonStyle.primary, row=0)
+    async def roof_good(self, i: discord.Interaction, b: discord.ui.Button):
+        await self._pick(i, "roof", "Good")
+
+    @discord.ui.button(label="Needs Replacing", style=discord.ButtonStyle.primary, row=0)
+    async def roof_replace(self, i: discord.Interaction, b: discord.ui.Button):
+        await self._pick(i, "roof", "Needs Replacing")
+
+    # ── HVAC (row 1) ──────────────────────────────────────────────────────────
+    @discord.ui.button(label="New", style=discord.ButtonStyle.primary, row=1)
+    async def hvac_new(self, i: discord.Interaction, b: discord.ui.Button):
+        await self._pick(i, "hvac", "New")
+
+    @discord.ui.button(label="Good", style=discord.ButtonStyle.primary, row=1)
+    async def hvac_good(self, i: discord.Interaction, b: discord.ui.Button):
+        await self._pick(i, "hvac", "Good")
+
+    @discord.ui.button(label="Needs Replacing", style=discord.ButtonStyle.primary, row=1)
+    async def hvac_replace(self, i: discord.Interaction, b: discord.ui.Button):
+        await self._pick(i, "hvac", "Needs Replacing")
+
+    # ── Condition (row 2) ─────────────────────────────────────────────────────
+    @discord.ui.button(label="Needs Full Rehab", style=discord.ButtonStyle.danger, row=2)
+    async def cond_full(self, i: discord.Interaction, b: discord.ui.Button):
+        await self._pick(i, "condition", "Needs Full Rehab")
+
+    @discord.ui.button(label="Needs Some Work", style=discord.ButtonStyle.primary, row=2)
+    async def cond_some(self, i: discord.Interaction, b: discord.ui.Button):
+        await self._pick(i, "condition", "Needs Some Work")
+
+    @discord.ui.button(label="Needs Little Work", style=discord.ButtonStyle.success, row=2)
+    async def cond_little(self, i: discord.Interaction, b: discord.ui.Button):
+        await self._pick(i, "condition", "Needs Little Work")
+
+
+# ── Three separate per-question views (used by post_survey) ──────────────────
 
 class RoofView(discord.ui.View):
     def __init__(self, channel_id: int):
@@ -173,7 +263,7 @@ class RoofView(discord.ui.View):
         await interaction.response.edit_message(
             content=f"🏠 **1. Roof:** ✅ {value}", view=self
         )
-        await _check_and_fire(interaction.channel, self.channel_id)
+        await _check_and_fire_simple(interaction.channel, self.channel_id)
 
     @discord.ui.button(label="New", style=discord.ButtonStyle.primary)
     async def new(self, i: discord.Interaction, b: discord.ui.Button):
@@ -201,7 +291,7 @@ class HvacView(discord.ui.View):
         await interaction.response.edit_message(
             content=f"❄️ **2. HVAC:** ✅ {value}", view=self
         )
-        await _check_and_fire(interaction.channel, self.channel_id)
+        await _check_and_fire_simple(interaction.channel, self.channel_id)
 
     @discord.ui.button(label="New", style=discord.ButtonStyle.primary)
     async def new(self, i: discord.Interaction, b: discord.ui.Button):
@@ -227,9 +317,9 @@ class ConditionView(discord.ui.View):
             item.disabled = True
             item.style = discord.ButtonStyle.success if item.label == value else discord.ButtonStyle.secondary
         await interaction.response.edit_message(
-            content=f"🔨 **3. Overall Condition:** ✅ {value}", view=self
+            content=f"🔨 **3. Condition:** ✅ {value}", view=self
         )
-        await _check_and_fire(interaction.channel, self.channel_id)
+        await _check_and_fire_simple(interaction.channel, self.channel_id)
 
     @discord.ui.button(label="Needs Full Rehab", style=discord.ButtonStyle.danger)
     async def full(self, i: discord.Interaction, b: discord.ui.Button):
@@ -244,7 +334,17 @@ class ConditionView(discord.ui.View):
         await self._pick(i, "Needs Little Work")
 
 
-# ── Prompt Builder ────────────────────────────────────────────────────────────
+async def _check_and_fire_simple(channel: discord.abc.Messageable, channel_id: int):
+    """Fire comp analysis once all 3 separate question views are answered."""
+    if _all_answered(channel_id):
+        state = channel_state.get(channel_id, {})
+        if not state.get("address"):
+            await channel.send(
+                "⚠️ No address found — use `/comp [full address]` to run the analysis."
+            )
+            return
+        await channel.send("🔍 Running comp analysis...")
+        asyncio.create_task(run_and_post_offers(channel))
 
 COMP_SYSTEM_PROMPT = """You are an elite real estate comping analyst for a real estate wholesaling company.
 You have deep knowledge of ARV calculation, repair estimation, and MAO formulas.
@@ -689,18 +789,13 @@ async def run_and_post_offers(channel: discord.TextChannel):
 # ── Survey Poster ─────────────────────────────────────────────────────────────
 
 async def post_survey(channel: discord.TextChannel, address: str):
-    """Post three separate question messages — one per question."""
-    # Initialize state for this channel
+    """Post three separate survey questions. Called after other bots have finished posting."""
     channel_state[channel.id] = {
         "address": address,
         "roof": None,
         "hvac": None,
         "condition": None,
     }
-    await channel.send(
-        f"🏠 **Condition Survey — {address}**\n"
-        f"Answer all 3 questions below to run the comp analysis."
-    )
     await channel.send("🏠 **1. Roof condition?**", view=RoofView(channel.id))
     await channel.send("❄️ **2. HVAC condition?**", view=HvacView(channel.id))
     await channel.send("🔨 **3. Overall condition?**", view=ConditionView(channel.id))
@@ -725,19 +820,7 @@ async def on_guild_channel_create(channel):
     if not is_watched_channel(channel):
         return
 
-    # Post survey immediately with a placeholder address
-    # Initialize state now so buttons work right away
-    channel_state[channel.id] = {
-        "address": None,
-        "roof": None,
-        "hvac": None,
-        "condition": None,
-    }
-    await channel.send("🏠 **1. Roof condition?**", view=RoofView(channel.id))
-    await channel.send("❄️ **2. HVAC condition?**", view=HvacView(channel.id))
-    await channel.send("🔨 **3. Overall condition?**", view=ConditionView(channel.id))
-
-    # Resolve address from Tickety in the background
+    # Wait for Tickety to post its lead message
     await asyncio.sleep(8)
     lead = await extract_lead_data(channel)
 
@@ -745,14 +828,9 @@ async def on_guild_channel_create(channel):
         await asyncio.sleep(7)
         lead = await extract_lead_data(channel)
 
-    if lead and lead.get("address") and lead.get("address_valid", True):
-        channel_state[channel.id]["address"] = lead["address"]
-    else:
-        # Post a note so rep knows to provide address manually
-        await channel.send(
-            "⚠️ **FHB Comp Bot** — Couldn't read address from Tickety. "
-            "Use `/comp [full address]` after completing the survey, or run `/comp [address]` to restart."
-        )
+    # Use whatever address we got — partial is fine, Claude handles it
+    address = lead["address"] if lead and lead.get("address") else "Unknown address"
+    await post_survey(channel, address)
 
 
 # ── Slash Commands ────────────────────────────────────────────────────────────
