@@ -19,7 +19,7 @@ from datetime import datetime
 DISCORD_TOKEN     = os.environ.get("DISCORD_TOKEN", "YOUR_DISCORD_TOKEN_HERE")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "YOUR_ANTHROPIC_API_KEY_HERE")
 
-TICKETY_BOT_ID    = None       # Set to Tickety's user ID for reliable detection
+TICKETY_BOT_ID    = 718493970652594217  # Tickety's Discord user ID
 WATCH_CATEGORIES  = []         # e.g. ["Leads"] — leave empty for all categories
 CASH_FEE          = 15_000     # Wholesale fee for cash offers
 NOVATION_FEE      = 0          # No fee deducted on novation (seller pays at close)
