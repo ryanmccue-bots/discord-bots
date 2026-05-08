@@ -1,39 +1,28 @@
 """
-FHB Comp Bot — Full Version
-Triggers on new channels created by Tickety bot.
-Reads structured lead data from the pinned Tickety message.
-Runs a full comp analysis via Claude + web search.
-Posts and pins the report in the channel.
-
-Extensions included:
-  - Rural/suburban market comping
-  - Institutional-grade analysis (weighted scoring, confidence intervals, sensitivity)
-  - Negotiation intelligence (offer bracket, scripts, deal scoring)
-  - Condo/townhome/attached housing
-  - Land/zoning/highest-and-best-use
+FHB Comp Bot v3
+- Tickety creates channel → bot posts condition survey with buttons
+- Rep fills in ROOF / HVAC / CONDITION
+- Bot runs comp analysis and posts short offer card in channel
+- Full comp detail posted in a thread for Alec to review
 """
 
 import discord
 from discord.ext import commands
+from discord import app_commands
 import anthropic
 import asyncio
 import re
 import os
 from datetime import datetime
 
-# ── Config ───────────────────────────────────────────────────────────────────
-DISCORD_TOKEN   = os.environ.get("DISCORD_TOKEN", "YOUR_DISCORD_TOKEN_HERE")
+# ── Config ────────────────────────────────────────────────────────────────────
+DISCORD_TOKEN     = os.environ.get("DISCORD_TOKEN", "YOUR_DISCORD_TOKEN_HERE")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "YOUR_ANTHROPIC_API_KEY_HERE")
 
-# Tickety bot user ID — find by right-clicking Tickety in Discord → Copy User ID
-# Leave as None to match by name instead
-TICKETY_BOT_ID = None  # e.g. 1234567890123456789
-
-# Only run comps in these category names (case-insensitive). Leave empty = all categories.
-WATCH_CATEGORIES: list[str] = []  # e.g. ["Leads", "Active Pipeline"]
-
-# Wholesale fee used in MAO formula
-WHOLESALE_FEE = 12_500
+TICKETY_BOT_ID    = None       # Set to Tickety's user ID for reliable detection
+WATCH_CATEGORIES  = []         # e.g. ["Leads"] — leave empty for all categories
+CASH_FEE          = 15_000     # Wholesale fee for cash offers
+NOVATION_FEE      = 0          # No fee deducted on novation (seller pays at close)
 
 # ── Bot Setup ─────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -43,38 +32,28 @@ intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+# In-memory store: channel_id → {address, roof, hvac, condition, survey_message_id}
+channel_state: dict[int, dict] = {}
 
-# ── Lead Data Extraction ──────────────────────────────────────────────────────
+
+# ── Tickety Parsing ───────────────────────────────────────────────────────────
 
 def is_tickety_message(message: discord.Message) -> bool:
-    """Return True if this message was posted by the Tickety bot."""
     if TICKETY_BOT_ID:
         return message.author.id == TICKETY_BOT_ID
     return "tickety" in message.author.name.lower() or message.author.bot
 
 
 def extract_field_lines(content: str, label_pattern: str, max_lines: int = 2) -> str | None:
-    """
-    Find a labeled field in a Tickety message and return up to `max_lines` of content
-    after the label. Stops at the next numbered field, blank line pair, or end of string.
-
-    Example — label "street address of the property" followed by:
-        2202 Glenwood Ave        ← line 1
-        Saginaw, MI 48601        ← line 2 (split address)
-    → returns "2202 Glenwood Ave Saginaw, MI 48601"
-    """
     pattern = rf"(?:{label_pattern})[^\n]*\n(.*?)(?=\n\s*\n\d+\.|\n\d+\.|\Z)"
     match = re.search(pattern, content, re.IGNORECASE | re.DOTALL)
     if not match:
         return None
-
     raw_block = match.group(1).strip()
-    # Take up to max_lines non-empty lines
     lines = [ln.strip() for ln in raw_block.split("\n") if ln.strip()][:max_lines]
     return " ".join(lines) if lines else None
 
 
-# US state abbreviations and full names for address validation
 _US_STATES = {
     "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
     "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
@@ -91,118 +70,45 @@ _US_STATES = {
 }
 
 def validate_address(address: str) -> tuple[bool, str]:
-    """
-    Check that an extracted address looks like a real US property address.
-    Returns (is_valid, reason_if_invalid).
-
-    Accepts wide format variation — commas/no commas, full state/abbreviation,
-    zip code present or absent. Claude handles normalization from here.
-    """
     if not address or len(address.strip()) < 8:
         return False, "too short"
-
     addr = address.strip()
-
-    # Must start with a street number (handles ranges like "1111-1113" too)
     if not re.match(r"^\d{1,6}[-\d]*\s", addr):
-        return False, "no street number found at start"
-
-    # Must contain at least one word that looks like a street name (2+ letters)
+        return False, "no street number found"
     words = re.findall(r"[a-zA-Z]{2,}", addr)
-    if len(words) < 1:
+    if not words:
         return False, "no street name found"
-
-    # Should contain a recognizable US state (abbreviation or full name)
-    # Split on spaces/commas to get individual tokens for abbreviation matching
     tokens = {t.strip(",.") for t in re.split(r"[\s,]+", addr)}
     has_state = (
-        any(t.upper() in _US_STATES for t in tokens)          # abbrev match
-        or any(s in addr.lower() for s in _US_STATES          # full name match
-               if len(s) > 3)
+        any(t.upper() in _US_STATES for t in tokens)
+        or any(s in addr.lower() for s in _US_STATES if len(s) > 3)
     )
     if not has_state:
-        # Soft warning — don't reject, but flag it. Some rural addresses lack state.
-        return True, "no state detected (will search anyway — verify if comp quality is low)"
-
+        return True, "no state detected"
     return True, ""
 
 
 def parse_tickety_message(content: str) -> dict:
-    """
-    Parse a Tickety lead message. Handles multi-line addresses and wide
-    formatting variation (commas, full state names, abbreviations, zip optional).
-
-    Example input:
-        1. Street Address of the Property
-        2202 Glenwood Ave, Saginaw, MI 48601
-
-        2. Name of the Seller
-        Marsha
-
-        3. Seller's Asking Price
-        15000
-
-    Returns a dict with keys: address, address_valid, address_warning,
-    seller_name, asking_price, asking_price_raw, and any optional fields found.
-    """
     data: dict = {}
-
-    # ── Address (grab up to 2 lines to handle split addresses) ──────────────
     raw_address = extract_field_lines(
         content,
         label_pattern=r"street address of the property|address of the property|property address|address",
         max_lines=2,
     )
-
     if raw_address:
-        # Normalize: collapse internal newlines → single space, strip extra whitespace
         normalized = re.sub(r"\s+", " ", raw_address).strip()
         data["address"] = normalized
-
-        valid, reason = validate_address(normalized)
+        valid, warning = validate_address(normalized)
         data["address_valid"] = valid
-        data["address_warning"] = reason if reason else ""
+        data["address_warning"] = warning
     else:
         data["address"] = None
         data["address_valid"] = False
-        data["address_warning"] = "address field not found in message"
-
-    # ── Seller name ──────────────────────────────────────────────────────────
-    seller_raw = extract_field_lines(content, r"name of the seller|seller name|seller", max_lines=1)
-    if seller_raw:
-        data["seller_name"] = seller_raw.strip()
-
-    # ── Asking price ─────────────────────────────────────────────────────────
-    price_raw = extract_field_lines(content, r"asking price|seller.{0,10}price|list price", max_lines=1)
-    if price_raw:
-        data["asking_price_raw"] = price_raw.strip()
-        numeric = re.sub(r"[^\d.]", "", price_raw)
-        data["asking_price"] = float(numeric) if numeric else None
-
-    # ── Optional fields Tickety may or may not include ───────────────────────
-    for label, key in [
-        (r"bed(?:room)?s?",          "beds"),
-        (r"bath(?:room)?s?",         "baths"),
-        (r"sq(?:uare)?\s?f(?:oo)?t", "sqft"),
-        (r"year built",              "year_built"),
-        (r"property type",           "property_type"),
-        (r"condition",               "condition"),
-        (r"lot size",                "lot_size"),
-        (r"notes?|additional info",  "notes"),
-    ]:
-        val = extract_field_lines(content, label, max_lines=1)
-        if val:
-            data[key] = val.strip()
-
+        data["address_warning"] = "address field not found"
     return data
 
 
 async def extract_lead_data(channel: discord.TextChannel) -> dict | None:
-    """
-    Read the channel's pinned messages and recent history to find the Tickety
-    lead message. Returns parsed lead data dict or None if not found.
-    """
-    # Try pinned messages first
     try:
         pins = await channel.pins()
         for msg in pins:
@@ -212,8 +118,6 @@ async def extract_lead_data(channel: discord.TextChannel) -> dict | None:
                     return data
     except Exception:
         pass
-
-    # Fall back to channel history (first 10 messages)
     try:
         async for msg in channel.history(limit=10, oldest_first=True):
             if is_tickety_message(msg) and msg.content:
@@ -222,12 +126,10 @@ async def extract_lead_data(channel: discord.TextChannel) -> dict | None:
                     return data
     except Exception:
         pass
-
     return None
 
 
 def is_watched_channel(channel: discord.TextChannel) -> bool:
-    """Return True if we should run a comp for this channel."""
     if WATCH_CATEGORIES:
         if not channel.category:
             return False
@@ -236,230 +138,215 @@ def is_watched_channel(channel: discord.TextChannel) -> bool:
     return True
 
 
+# ── Survey UI ─────────────────────────────────────────────────────────────────
+
+class ConditionSurvey(discord.ui.View):
+    """Three-question property condition survey with buttons."""
+
+    def __init__(self, channel_id: int, address: str):
+        super().__init__(timeout=3600)  # 1 hour to respond
+        self.channel_id = channel_id
+        self.address = address
+        # Initialize state
+        channel_state[channel_id] = {
+            "address": address,
+            "roof": None,
+            "hvac": None,
+            "condition": None,
+        }
+
+    def _update_button_styles(self, question: str, selected: str):
+        """Highlight selected button, grey out others for the same question."""
+        for item in self.children:
+            if hasattr(item, "_question") and item._question == question:
+                if item._value == selected:
+                    item.style = discord.ButtonStyle.success
+                else:
+                    item.style = discord.ButtonStyle.secondary
+
+    def _all_answered(self) -> bool:
+        state = channel_state.get(self.channel_id, {})
+        return all(state.get(k) for k in ["roof", "hvac", "condition"])
+
+    async def _handle_answer(self, interaction: discord.Interaction, question: str, value: str, label: str):
+        channel_state[self.channel_id][question] = value
+        self._update_button_styles(question, value)
+
+        if self._all_answered():
+            # Disable all buttons
+            for item in self.children:
+                item.disabled = True
+            await interaction.response.edit_message(
+                content=self._survey_text() + "\n\n✅ **Survey complete — running comp analysis...**",
+                view=self
+            )
+            # Kick off analysis
+            asyncio.create_task(run_and_post_offers(interaction.channel))
+        else:
+            await interaction.response.edit_message(
+                content=self._survey_text(),
+                view=self
+            )
+
+    def _survey_text(self) -> str:
+        state = channel_state.get(self.channel_id, {})
+        roof = f"**{state['roof']}**" if state.get("roof") else "_not answered_"
+        hvac = f"**{state['hvac']}**" if state.get("hvac") else "_not answered_"
+        cond = f"**{state['condition']}**" if state.get("condition") else "_not answered_"
+        return (
+            f"🏠 **Condition Survey — {self.address}**\n"
+            f"Answer all 3 questions to run the comp analysis.\n\n"
+            f"**1. Roof:** {roof}\n"
+            f"**2. HVAC:** {hvac}\n"
+            f"**3. Overall Condition:** {cond}"
+        )
+
+    # ── Roof buttons ──────────────────────────────────────────────────────────
+    @discord.ui.button(label="🏠 Roof: New", style=discord.ButtonStyle.primary, row=0)
+    async def roof_new(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button._question = "roof"; button._value = "New"
+        await self._handle_answer(interaction, "roof", "New", "New")
+
+    @discord.ui.button(label="🏠 Roof: Good", style=discord.ButtonStyle.primary, row=0)
+    async def roof_good(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button._question = "roof"; button._value = "Good"
+        await self._handle_answer(interaction, "roof", "Good", "Good")
+
+    @discord.ui.button(label="🏠 Roof: Needs Replacing", style=discord.ButtonStyle.primary, row=0)
+    async def roof_replace(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button._question = "roof"; button._value = "Needs Replacing"
+        await self._handle_answer(interaction, "roof", "Needs Replacing", "Needs Replacing")
+
+    # ── HVAC buttons ──────────────────────────────────────────────────────────
+    @discord.ui.button(label="❄️ HVAC: New", style=discord.ButtonStyle.primary, row=1)
+    async def hvac_new(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button._question = "hvac"; button._value = "New"
+        await self._handle_answer(interaction, "hvac", "New", "New")
+
+    @discord.ui.button(label="❄️ HVAC: Good", style=discord.ButtonStyle.primary, row=1)
+    async def hvac_good(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button._question = "hvac"; button._value = "Good"
+        await self._handle_answer(interaction, "hvac", "Good", "Good")
+
+    @discord.ui.button(label="❄️ HVAC: Needs Replacing", style=discord.ButtonStyle.primary, row=1)
+    async def hvac_replace(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button._question = "hvac"; button._value = "Needs Replacing"
+        await self._handle_answer(interaction, "hvac", "Needs Replacing", "Needs Replacing")
+
+    # ── Condition buttons ─────────────────────────────────────────────────────
+    @discord.ui.button(label="🔨 Needs Full Rehab", style=discord.ButtonStyle.primary, row=2)
+    async def cond_full(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button._question = "condition"; button._value = "Needs Full Rehab"
+        await self._handle_answer(interaction, "condition", "Needs Full Rehab", "Needs Full Rehab")
+
+    @discord.ui.button(label="🔧 Needs Some Work", style=discord.ButtonStyle.primary, row=2)
+    async def cond_some(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button._question = "condition"; button._value = "Needs Some Work"
+        await self._handle_answer(interaction, "condition", "Needs Some Work", "Needs Some Work")
+
+    @discord.ui.button(label="✨ Needs Little Work", style=discord.ButtonStyle.primary, row=2)
+    async def cond_little(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button._question = "condition"; button._value = "Needs Little Work"
+        await self._handle_answer(interaction, "condition", "Needs Little Work", "Needs Little Work")
+
+
 # ── Prompt Builder ────────────────────────────────────────────────────────────
 
 COMP_SYSTEM_PROMPT = """You are an elite real estate comping analyst for a real estate wholesaling company.
-You have deep knowledge of professional appraisal methodology, ARV calculation, and MAO formulas.
-You are thorough, conservative, and data-driven. You flag uncertainty honestly.
+You have deep knowledge of ARV calculation, repair estimation, and MAO formulas.
+You are conservative and data-driven.
 
-CRITICAL OUTPUT RULES — these are absolute and override everything else:
-
-1. YOUR RESPONSE MUST START WITH # AND NOTHING ELSE. The very first character of your response must be #. No thinking out loud. No "I'll search...", no "Good data coming in...", no transition sentences. Zero text before the # header. If you write anything before #, you have failed.
-
-2. LINE LENGTH: Every blockquote (>) line and every flag line (🔴🟡🟢) must fit on ONE line, max 100 characters. Count characters. If over 100, cut words until it fits. Never break a flag or blockquote across two lines.
-
-3. COMPS SECTION: Each comp = one > header line + one code block (3 lines: Sold / Style / Link outside). Zero prose between comps. Zero explanatory text outside code blocks. No "Comp Notes". No adjustment prose — adjustments go in the Adjustments bullets only.
-
-4. ADJUSTMENTS: One bullet per line, max 80 characters. No prose sentences after the bullet list. Nothing else in the adjustments section.
-
-5. ACTIVE LISTINGS: One > blockquote line per listing. No prose paragraphs. No sentences outside blockquotes.
-
-6. FLAGS: One line per flag, max 100 chars. Group by color with blank line between groups. Never put the emoji on one line and the text on the next line — they must be on the same line.
-
-7. MARKET SECTION: Use a code block for the data grid. One short > blockquote line for analysis. Nothing else.
-
-8. When in doubt, cut it. A short tight report is better than a complete verbose one."""
+CRITICAL OUTPUT RULES:
+1. Your response must start INSTANTLY with the # title header. Zero text before it.
+2. Every blockquote (>) line max 100 characters. Cut ruthlessly.
+3. Every flag (🔴🟡🟢) on ONE line, max 100 chars, emoji and text together.
+4. COMPS section: header line + code block + link per comp. Zero prose between comps.
+5. Adjustments and Active listings in code blocks.
+6. No Weighted ARV tables. No Methodology Notes. No pipe tables.
+7. When in doubt, be shorter."""
 
 
-def build_comp_prompt(lead: dict, wholesale_fee: int = WHOLESALE_FEE) -> str:
-    address       = lead.get("address", "Unknown")
-    seller_name   = lead.get("seller_name", "Unknown")
-    asking_price  = lead.get("asking_price")
-    asking_raw    = lead.get("asking_price_raw", "Unknown")
-    beds          = lead.get("beds", "unknown")
-    baths         = lead.get("baths", "unknown")
-    sqft          = lead.get("sqft", "unknown")
-    year_built    = lead.get("year_built", "unknown")
-    prop_type     = lead.get("property_type", "unknown")
-    condition     = lead.get("condition", "unknown")
+def condition_to_score(roof: str, hvac: str, condition: str) -> tuple[int, str]:
+    """Convert survey answers to a condition score and repair tier."""
+    score = 5  # baseline
 
-    asking_str = f"${asking_price:,.0f}" if asking_price else asking_raw
+    if roof == "New":
+        score += 1
+    elif roof == "Needs Replacing":
+        score -= 1
 
+    if hvac == "New":
+        score += 1
+    elif hvac == "Needs Replacing":
+        score -= 1
+
+    if condition == "Needs Little Work":
+        score += 1
+        tier = "light"
+    elif condition == "Needs Some Work":
+        tier = "medium"
+    elif condition == "Needs Full Rehab":
+        score -= 2
+        tier = "heavy"
+    else:
+        tier = "medium"
+
+    score = max(1, min(10, score))
+    return score, tier
+
+
+def repair_range(score: int, sqft_estimate: int = 1200) -> tuple[int, int, int]:
+    """Return low/mid/high repair estimates based on condition score."""
+    if score >= 8:
+        per_sqft = (5, 12)
+    elif score >= 6:
+        per_sqft = (15, 25)
+    elif score >= 4:
+        per_sqft = (25, 40)
+    elif score >= 2:
+        per_sqft = (40, 60)
+    else:
+        per_sqft = (60, 100)
+
+    low = int(sqft_estimate * per_sqft[0])
+    high = int(sqft_estimate * per_sqft[1])
+    mid = int((low + high) / 2)
+    return low, mid, high
+
+
+def novation_eligible(roof: str, hvac: str, condition: str) -> bool:
+    """Novation only if roof+hvac are New/Good AND condition is not full rehab."""
+    roof_ok = roof in ("New", "Good")
+    hvac_ok = hvac in ("New", "Good")
+    cond_ok = condition != "Needs Full Rehab"
+    return roof_ok and hvac_ok and cond_ok
+
+
+def build_comp_prompt(address: str, roof: str, hvac: str, condition: str) -> str:
+    score, tier = condition_to_score(roof, hvac, condition)
     date_str = datetime.now().strftime("%B %d, %Y")
 
-    return f"""Perform a complete comp analysis for this wholesale lead. Use web search to pull Zillow/Redfin data.
+    return f"""Perform a complete comp analysis for this wholesale lead.
 
 ## SUBJECT PROPERTY
 - Address: {address}
-- Beds/Baths: {beds} bed / {baths} bath
-- Sqft: {sqft}
-- Year Built: {year_built}
-- Property Type: {prop_type}
-- Condition (if known): {condition}
+- Roof: {roof}
+- HVAC: {hvac}
+- Overall Condition: {condition}
+- Estimated Condition Score: {score}/10 ({tier} rehab)
+
+## YOUR TASK
+Use web search to find:
+1. Subject property details (beds, baths, sqft, year built, lot size) from Zillow/Redfin/public records
+2. Market conditions for the zip code (DOM, inventory, sale-to-list ratio)
+3. Sold comps — fully renovated, same area, last 6 months where possible
+
+Then produce the analysis in this EXACT format:
 
 ---
-
-## STEP 1 — GATHER PROPERTY DATA
-Use web search to find public listing data for {address}:
-- Beds, baths, sqft, year built, lot size, construction type, garage, pool
-- Any prior MLS listing history, prior sale price, days on market
-- Property photos to estimate condition (score 1–10: 1=Tear Down, 10=Newly Remodeled)
-
-## STEP 2 — MARKET CONDITIONS
-Search for market data in the subject's zip code / city:
-- Months of inventory (buyer's <3 / neutral 3-6 / seller's 6+)
-- Average days on market
-- Sale-to-list price ratio
-- Price trend (QoQ, YoY)
-- Absorption rate: (sold last 6 months / 6) = monthly absorption; active / monthly = months of inventory
-- Pending ratio: pending / (pending + active). >50% = strong demand.
-
-## STEP 3 — FIND COMPS
-Pull SOLD comps from Zillow/Redfin. Apply filters IN ORDER:
-1. Same subdivision, same zip, no major road crossings, within 0.5–1 mile
-2. Same property type and style (ranch with ranch, etc.)
-3. Within ±10% sqft, ±10 years age, ±2,500 sqft lot
-4. Match construction material (wood frame vs block/brick)
-5. Comps must be FULLY RENOVATED (condition 8–10)
-6. Buyer's market: 90 days max. Seller's market: up to 6 months.
-
-**If fewer than 3 comps exist within 1 mile → RURAL EXTENSION applies:**
-- Tier 1 (best): same area, same type, within 12 months, within 2 miles — no discount
-- Tier 2 (acceptable): same county, within 12 months, within 5 miles — multiply comp by 0.95
-- Tier 3 (last resort): adjacent counties, within 18 months, within 10 miles — multiply comp by 0.90
-- Apply acreage adjustments, well/septic adjustments if applicable
-
-**SCORE each comp 0-100:**
-| Factor | Weight | Scoring |
-|--------|--------|---------|
-| Recency | 25% | 100 = sold this month, -10 per month older |
-| Proximity | 25% | 100 = same street, -5 per 0.1 mile |
-| Size match | 20% | 100 = exact sqft, -2 per 50 sqft diff |
-| Style match | 15% | 100 = identical, 70 = similar, 40 = different |
-| Condition match | 15% | 100 = same condition, -10 per grade diff |
-
-Also pull ACTIVE and PENDING listings for the active comp check.
-
-## STEP 4 — ACTIVE COMP CHECK
-- If renovated active listing sits 90+ days: ARV = listing price × 0.90
-- DOM 60–90: overpriced 5–10%. DOM 90+: overpriced 10%+.
-- Pending ratio check. If property sat 60+ days before pending, contract price likely 10–20% below list.
-
-## STEP 5 — ADJUSTMENTS
-Apply these adjustments relative to subject property:
-
-**Feature adjustments (under $600K):**
-- Bedroom: ±$10K–$25K each
-- Full bathroom: ±$10K; half bath ±$5K
-- 2-car garage: ±$10K–$25K (±$25K in extreme climates)
-- Carport: ±$5K–$10K
-- In-ground pool: ±$10K–$30K. Above-ground pool = $0.
-- Pool only rule: if subject is only one WITHOUT pool vs all comps: -$30K under $600K
-- Lot size: ±$5K–$10K per 5,000 sqft (under $600K)
-- Proximity to highway/commercial/multifamily: -$15K (siding), -$20K (backing), -$30K (fronting)
-- Construction material mismatch (wood vs block): -10% to -20%
-- Waterfront/landlocked mismatch: comp × 0.85
-
-**Well & Septic (if applicable):**
-- Low-yield well (<3 GPM): -$5K to -$15K
-- Well needing replacement: -$10K to -$30K
-- Failed septic: -$20K to -$40K
-- Comp has city water/sewer, subject has well/septic: -$10K to -$20K combined
-
-**Rural lot acreage (if applicable):**
-- First acre: full value
-- Acres 2–5: $3–$8/sqft of usable land
-- Acres 5–10: $1–$4/sqft
-- Acres 10+: raw land value only
-
-**School district (if applicable):**
-- Each rating point difference = ±2% adjustment
-
-**ADU/Guest House:**
-- Separate parcel + built: 100% of $/sqft value
-- No parcel + finished: 50% of $/sqft value
-- No parcel, not built: $0
-- Unfinished: $0
-
-**Condo/Townhome specific (if applicable):**
-- Floor level: ±2–3% per floor
-- End unit vs interior: +3–5%
-- View side vs parking lot: +5–10%
-- HOA fee difference >$100/mo: −$12K–$15K per $100/mo extra
-- Parking type: private garage +$15K–$30K; street only -$10K–$20K
-
-## STEP 6 — ARV CALCULATION
-1. Calculate weighted average: each comp's price × its score, then divide by total scores
-2. Cross-check with $/sqft as secondary reference
-3. Cross-check against active comp analysis
-4. Produce THREE ARV estimates:
-   - Conservative (Low): worst-case comp, for buyer's market calculations
-   - Most Likely (Mid): weighted average, use for standard MAO
-   - Optimistic (High): best-case scenario
-   - If spread >15%: low confidence, use 65% or lower
-
-**Check for land/zoning upside (if lot unusually large or area is transitioning):**
-- Is there ADU potential? Addition play? Lot split? Teardown economics?
-- Teardown math: lot value = new construction price - build cost (~$150–$350/sqft)
-
-**Seasonal adjustment:**
-- Spring (Mar–May): prices ~3–5% above annual avg
-- Summer (Jun–Aug): ~1–3% above
-- Fall (Sep–Nov): at or slightly below avg
-- Winter (Dec–Feb): 3–7% below peak
-Note current season and whether comps are from a different season than planned exit.
-
-**Market trend overlay:**
-- If all 4 indicators (price trend, DOM trend, list-to-sale trend, inventory trend) are bullish: +3–5% to ARV
-- All bearish: -3–5%
-- Mixed: no adjustment, note uncertainty
-
-## STEP 7 — REPAIR ESTIMATE
-Estimate condition 1–10 from listing photos/description:
-- 8–10 (clean/remodeled): $0–$5/sqft
-- 6–7 (dated/rentable): $15–$25/sqft
-- 4–5 (dirty/hoarder): $25–$40/sqft
-- 3 (needs everything): $40–$60/sqft
-- 1–2 (teardown/fire/foundation): $60–$100+/sqft
-- Luxury renovation: $75–$120+/sqft
-
-## STEP 8 — MAO CALCULATION
-
-**Investment % to use — pick ONE, apply it consistently:**
-
-| Situation | % | Use when |
-|-----------|---|----------|
-| Hot seller's market | 75–80% | <2 months inventory, DOM <20 days |
-| Normal market (FHB default) | 75% | Balanced conditions, urban/suburban |
-| Buyer's market | 70% | DOM rising, inventory 6+ months |
-| Rural (Tier 2–3 comps required, small buyer pool) | 65% | Fewer than 3 comps within 1 mile, rural setting |
-| Very rural (30+ min from nearest city) | 60% | Extreme comp scarcity, agricultural area |
-
-**CRITICAL:** If you triggered the rural extension (Tier 2 or 3 comps), you MUST use 65% or lower — never 75%. These are mutually exclusive. Do not say "rural discount applied" and then use 75%.
-
-**MAO formula:**
-MAO = (ARV_mid × Investment%) − Repairs_mid − ${wholesale_fee:,} wholesale fee
-
----
-
-## OUTPUT FORMAT
-
-CRITICAL FORMATTING RULES — follow exactly:
-1. Start INSTANTLY with the # title header. Zero text before it. No preamble, no "Now I have enough data", no summaries. Nothing.
-2. Do NOT include: Weighted ARV Calculation section, scoring breakdown tables, Methodology Notes section. All excluded.
-3. Anything worth noting from methodology or data gaps goes in FLAGS only.
-4. No markdown tables with pipe characters — they render poorly in Discord. Use blockquotes and bullet lines instead.
-5. Use Discord markdown only.
-6. In the COMPS section: each comp is a blockquote header line followed by a 2-line code block. No "Comp Notes" section. No explanatory text outside the code blocks. No "Zillow shows", no "Redfin records show".
-7. Every flag in FLAGS must fit on ONE line (≤120 chars). Group by color (🔴 then 🟡 then 🟢) with a blank line between each color group. No line breaks within a flag.
 
 # 🏠 COMP REPORT — {address}
 *{date_str} · Confidence: [HIGH / MEDIUM / LOW / VERY LOW]*
-
----
-
-## 📋 MAO — $[MAO] *([X]% of ARV · $12,500 fee · $[repairs] repairs)*
-
-```
-ARV (Mid):        $[X]
-× [X]%:           $[X]
-− Repairs (Mid):  −$[X]
-− Wholesale Fee:  −$12,500
-MAO:              $[X]
-```
-> [One sentence on what's driving the MAO — max 100 chars]
-
-[If MAO cannot be calculated: "## 📋 MAO — ⚠️ CANNOT CALCULATE" then code block with conditional formula]
 
 ---
 
@@ -470,18 +357,18 @@ Most Likely:   $[X]
 Optimistic:    $[X]
 Spread:        [X]% → [HIGH/MEDIUM/LOW/VERY LOW] confidence
 ```
-> [One sentence, MAX 100 chars — comp quality and $/sqft basis only]
+> [One sentence, max 100 chars — comp quality and $/sqft basis]
 
 ---
 
 ## 🔨 CONDITION & REPAIRS
 ```
-Condition:  [X/10] — [one phrase, e.g. "Dated but livable"]
+Condition:  {score}/10 — {condition} · Roof: {roof} · HVAC: {hvac}
 Low:        $[X]
 Mid:        $[X]
 High:       $[X]
 ```
-> [One sentence, MAX 100 chars — what's driving the estimate]
+> [One sentence, max 100 chars — what's driving the estimate]
 
 ---
 
@@ -492,109 +379,158 @@ Avg DOM:       [X] days
 Sale-to-List:  [X]%
 Inventory:     [X] months
 ```
-> [One sentence, MAX 100 chars — market implication for this deal]
+> [One sentence, max 100 chars — market implication]
 
 ---
 
 ## 🏡 COMPS
 
-[If rural extension applies, this ONE line only — nothing else:]
+[If rural extension applies:]
 ⚠️ Rural Extension — Tier [X] comps · No confirmed sold comps within [X] miles
 
-[For each comp use this EXACT three-part pattern. No variations. No extra text between comps.]
+[For each comp — EXACT pattern, no variations:]
 > **[Address]** · Score [X]/100 · Tier [X]
 ```
 Sold: $[price] · [Mon YYYY] · [sqft] sqft · $[X]/sqft
 Style: [style] · [beds]bd/[baths]ba · [key feature]
 ```
-> 🔗 [full Zillow or Redfin URL — or "Link not found"]
-
-[Blank line between comps. Repeat pattern for all comps. Then ONE shared adjustments block and ONE active listings block below ALL comps.]
+> 🔗 [Zillow/Redfin URL — or "Link not found"]
 
 **Adjustments:**
 ```
-• [Feature] · ±$[X] · [reason — max 8 words]
 • [Feature] · ±$[X] · [reason — max 8 words]
 ```
 
 **Active listings:**
 ```
-[Address] — $[price] · [X] days · [ARV impact — max 50 chars]
+[Address] — $[price] · [X] days · [ARV impact]
 ```
-[Write "None." inside the code block if no active listings flagged.]
 
 ---
 
 ## 🚩 FLAGS
-[ABSOLUTE RULES FOR FLAGS:]
-[- Every flag: emoji + text on THE SAME LINE. Never split. Max 100 chars total.]
-[- If a flag text would make the line over 100 chars: cut words until it fits.]
-[- Group by color. Blank line between each color group.]
-[- No prose sentences. No sub-bullets. No line breaks within any flag.]
 
-> 🔴 [Critical risk — emoji and text on same line, max 100 chars]
-> 🔴 [Critical risk — emoji and text on same line, max 100 chars]
+> 🔴 [Critical risk — ONE line, max 100 chars]
 
-> 🟡 [Important note — emoji and text on same line, max 100 chars]
-> 🟡 [Important note — emoji and text on same line, max 100 chars]
+> 🟡 [Important note — ONE line, max 100 chars]
 
-> 🟢 [Upside/positive — emoji and text on same line, max 100 chars]
-> 🟢 [Upside/positive — emoji and text on same line, max 100 chars]
-
-[If MAO couldn't be confirmed, one green flag with conditional MAO:]
-> 🟢 Conditional MAO @ condition [X]/10: ($[ARV] × [X]%) − $[repairs] − $12,500 = **$[MAO]**
-
-[Omit entire section if nothing to flag. Omit any color group if no flags of that type.]
+> 🟢 [Upside/positive — ONE line, max 100 chars]
 
 ---
-*⚡ FHB Comp Bot · Always verify before offering · Confidence: [HIGH / MEDIUM / LOW / VERY LOW]*
-"""
+*⚡ FHB Comp Bot · Always verify before offering · Confidence: [HIGH/MEDIUM/LOW/VERY LOW]*"""
 
 
-# ── Analysis Runner ───────────────────────────────────────────────────────────
+# ── Offer Calculator ──────────────────────────────────────────────────────────
+
+def parse_arv_from_report(report: str) -> int | None:
+    """Extract Most Likely ARV from the report text."""
+    match = re.search(r"Most Likely:\s+\$([0-9,]+)", report)
+    if match:
+        return int(match.group(1).replace(",", ""))
+    return None
+
+
+def parse_market_type(report: str) -> str:
+    """Extract market type from report."""
+    match = re.search(r"Type:\s+(.+)", report)
+    if match:
+        return match.group(1).strip().lower()
+    return "neutral"
+
+
+def cash_investment_pct(market_type: str) -> float:
+    """Return cash offer investment % based on market."""
+    if "seller" in market_type and ("hot" in market_type or "extreme" in market_type):
+        return 0.75
+    elif "seller" in market_type:
+        return 0.72
+    elif "buyer" in market_type:
+        return 0.60
+    elif "rural" in market_type or "very rural" in market_type:
+        return 0.60
+    else:
+        return 0.68
+
+
+def novation_investment_pct(market_type: str) -> float:
+    """Return novation offer investment % based on market."""
+    if "seller" in market_type and ("hot" in market_type or "extreme" in market_type):
+        return 0.85
+    elif "seller" in market_type:
+        return 0.82
+    elif "buyer" in market_type:
+        return 0.75
+    else:
+        return 0.78
+
+
+def build_offer_card(
+    address: str,
+    arv: int,
+    repairs_mid: int,
+    market_type: str,
+    roof: str,
+    hvac: str,
+    condition: str,
+    confidence: str,
+) -> str:
+    cash_pct = cash_investment_pct(market_type)
+    cash_gross = int(arv * cash_pct)
+    cash_offer = max(0, cash_gross - repairs_mid - CASH_FEE)
+
+    lines = [
+        f"# 🏠 {address}",
+        f"*ARV: ${arv:,} · Repairs (mid): ${repairs_mid:,} · Confidence: {confidence}*",
+        f"*Roof: {roof} · HVAC: {hvac} · Condition: {condition}*",
+        "",
+        "---",
+        "",
+        f"## 💰 CASH OFFER: **${cash_offer:,}**",
+        "```",
+        f"ARV:            ${arv:,}",
+        f"× {int(cash_pct*100)}%:          ${cash_gross:,}",
+        f"− Repairs:      −${repairs_mid:,}",
+        f"− Fee:          −${CASH_FEE:,}",
+        f"= Cash Offer:   ${cash_offer:,}",
+        "```",
+    ]
+
+    if novation_eligible(roof, hvac, condition):
+        nov_pct = novation_investment_pct(market_type)
+        nov_gross = int(arv * nov_pct)
+        nov_offer = max(0, nov_gross - NOVATION_FEE)
+        lines += [
+            "",
+            f"## 📋 NOVATION OFFER: **${nov_offer:,}**",
+            "```",
+            f"ARV:              ${arv:,}",
+            f"× {int(nov_pct*100)}%:            ${nov_gross:,}",
+            f"(No repair deduction — seller completes at close)",
+            f"= Novation Offer: ${nov_offer:,}",
+            "```",
+        ]
+    else:
+        lines += [
+            "",
+            "## 📋 NOVATION OFFER: **Not eligible**",
+            "> Roof or HVAC needs replacing, or property needs full rehab.",
+        ]
+
+    lines += ["", "---", "*💬 Full comp detail in thread below ↓*"]
+    return "\n".join(lines)
+
+
+# ── Report Splitter ───────────────────────────────────────────────────────────
 
 def strip_preamble(text: str) -> str:
-    """
-    Remove any text Claude wrote before the # report header.
-    Finds the first line starting with # and returns everything from there.
-    """
-    lines = text.split("\n")
-    for i, line in enumerate(lines):
+    for i, line in enumerate(text.split("\n")):
         if line.startswith("# "):
-            return "\n".join(lines[i:])
-    # If no # header found, return as-is
+            return "\n".join(text.split("\n")[i:])
     return text
 
 
-def run_comp_analysis(address: str, prompt: str) -> str:
-    """Call Claude with web search. Returns the report text."""
-    try:
-        response = anthropic_client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=4000,
-            system=COMP_SYSTEM_PROMPT,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            messages=[{"role": "user", "content": prompt}],
-        )
-        parts = [block.text for block in response.content if hasattr(block, "text")]
-        raw = "\n".join(parts).strip()
-        return strip_preamble(raw) or "⚠️ No analysis generated — try `/comp` manually."
-    except Exception as e:
-        return f"⚠️ Analysis error: {e}"
-
-
 def split_report(report: str, max_len: int = 1900) -> list[str]:
-    """
-    Split report into chunks, with two hard rules:
-    1. Never split inside a code block.
-    2. COMPS and FLAGS sections always start a new message.
-    Then apply max_len splitting within each section-chunk.
-    """
-    import re
-
-    # These section headers always force a new message
     FORCED_BREAKS = {"## 🏡 COMPS", "## 🚩 FLAGS"}
-
     chunks = []
     current = ""
     in_code_block = False
@@ -603,12 +539,11 @@ def split_report(report: str, max_len: int = 1900) -> list[str]:
         if line.strip().startswith("```"):
             in_code_block = not in_code_block
 
-        # Force a new message at COMPS and FLAGS headers (only if not in code block)
-        is_forced_break = not in_code_block and any(
+        is_forced = not in_code_block and any(
             line.strip().startswith(fb) for fb in FORCED_BREAKS
         )
 
-        if is_forced_break:
+        if is_forced:
             if current.strip():
                 chunks.append(current.strip())
             current = line + "\n"
@@ -622,7 +557,6 @@ def split_report(report: str, max_len: int = 1900) -> list[str]:
     if current.strip():
         chunks.append(current.strip())
 
-    # Final safety pass
     safe = []
     for chunk in chunks:
         while len(chunk) > max_len:
@@ -634,52 +568,126 @@ def split_report(report: str, max_len: int = 1900) -> list[str]:
     return safe or [report[:max_len]]
 
 
-async def post_comp_report(channel: discord.TextChannel, lead: dict):
-    """Run analysis and post the report to the channel."""
-    address = lead.get("address", "Unknown address")
-    asking  = lead.get("asking_price_raw") or lead.get("asking_price") or "unknown"
+# ── Core Analysis Runner ──────────────────────────────────────────────────────
 
-    # Loading message
-    loading = await channel.send(
-        f"🔍 **Running comp analysis...**\n"
-        f"📍 `{address}`\n"
-        f"⏳ Pulling Zillow data — usually 30–60 sec..."
-    )
-
+def run_comp_analysis(address: str, prompt: str) -> str:
     try:
-        prompt = build_comp_prompt(lead)
-        loop   = asyncio.get_event_loop()
-        report = await loop.run_in_executor(None, lambda: run_comp_analysis(address, prompt))
+        response = anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=4000,
+            # Cache the system prompt — it's identical on every call
+            system=[
+                {
+                    "type": "text",
+                    "text": COMP_SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt,
+                            # Cache the methodology portion of the prompt too
+                            # (everything up to the address-specific part is reusable)
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                }
+            ],
+        )
+        parts = [block.text for block in response.content if hasattr(block, "text")]
+        raw = "\n".join(parts).strip()
+        return strip_preamble(raw) or "⚠️ No analysis generated."
     except Exception as e:
-        report = f"⚠️ Analysis failed: {e}"
+        return f"⚠️ Analysis error: {e}"
 
-    try:
-        await loading.delete()
-    except Exception:
-        pass
 
-    # Post report (split if needed)
-    first_msg = None
-    chunks = split_report(report) if len(report) > 1990 else [report]
-    for i, chunk in enumerate(chunks):
-        msg = await channel.send(chunk)
-        if i == 0:
-            first_msg = msg
-        await asyncio.sleep(0.4)
+async def run_and_post_offers(channel: discord.TextChannel):
+    """Run comp analysis and post offer card + thread with full detail."""
+    state = channel_state.get(channel.id)
+    if not state:
+        return
 
-    # Pin the first chunk
-    if first_msg:
+    address  = state["address"]
+    roof     = state["roof"]
+    hvac     = state["hvac"]
+    condition = state["condition"]
+
+    score, tier = condition_to_score(roof, hvac, condition)
+    prompt = build_comp_prompt(address, roof, hvac, condition)
+
+    # Run analysis in executor
+    loop = asyncio.get_event_loop()
+    report = await loop.run_in_executor(None, lambda: run_comp_analysis(address, prompt))
+
+    # Parse ARV and market from report
+    arv = parse_arv_from_report(report)
+    market_type = parse_market_type(report)
+
+    # Parse confidence
+    conf_match = re.search(r"Confidence:\s*(HIGH|MEDIUM|LOW|VERY LOW)", report)
+    confidence = conf_match.group(1) if conf_match else "LOW"
+
+    if not arv:
+        await channel.send(
+            f"⚠️ **Could not parse ARV from comp analysis.**\n"
+            f"The full report has been posted in a thread. Please calculate offer manually."
+        )
+    else:
+        # Calculate repair estimate
+        _, repairs_mid, _ = repair_range(score)
+
+        # Build and post offer card
+        offer_card = build_offer_card(
+            address, arv, repairs_mid, market_type,
+            roof, hvac, condition, confidence
+        )
+        offer_msg = await channel.send(offer_card)
+
+        # Pin the offer card
         try:
-            await first_msg.pin()
+            await offer_msg.pin()
         except Exception:
             pass
+
+        # Create thread and post full detail
+        try:
+            thread = await offer_msg.create_thread(
+                name=f"Comp Detail — {address[:40]}",
+                auto_archive_duration=1440
+            )
+            chunks = split_report(report)
+            for i, chunk in enumerate(chunks):
+                await thread.send(chunk)
+                await asyncio.sleep(0.4)
+        except Exception as e:
+            # If thread creation fails, post detail in channel
+            await channel.send(f"⚠️ Thread creation failed ({e}). Posting detail here:")
+            for chunk in split_report(report):
+                await channel.send(chunk)
+                await asyncio.sleep(0.4)
+
+
+# ── Survey Poster ─────────────────────────────────────────────────────────────
+
+async def post_survey(channel: discord.TextChannel, address: str):
+    """Post the condition survey to the channel."""
+    view = ConditionSurvey(channel.id, address)
+    await channel.send(
+        view._survey_text(),
+        view=view
+    )
 
 
 # ── Bot Events ────────────────────────────────────────────────────────────────
 
 @bot.event
 async def on_ready():
-    print(f"✅ FHB Comp Bot online as {bot.user}")
+    print(f"✅ FHB Comp Bot v3 online as {bot.user}")
     try:
         synced = await bot.tree.sync()
         print(f"   Synced {len(synced)} slash commands")
@@ -694,68 +702,53 @@ async def on_guild_channel_create(channel):
     if not is_watched_channel(channel):
         return
 
-    # Wait for Tickety to post its message
+    # Wait for Tickety to post
     await asyncio.sleep(8)
-
     lead = await extract_lead_data(channel)
 
-    # If no address found, wait a bit longer and try once more
-    # (Tickety may not have posted yet when the channel was created)
+    # Retry once if not found
     if not lead or not lead.get("address"):
         await asyncio.sleep(7)
         lead = await extract_lead_data(channel)
 
-    # No address at all
     if not lead or not lead.get("address"):
         await channel.send(
-            "🏠 **FHB Comp Bot** — Channel created but no address found in the Tickety message.\n"
-            "Use `/comp [full address]` to run the comp manually."
+            "🏠 **FHB Comp Bot** — No address found in Tickety message.\n"
+            "Use `/comp [full address]` to run manually."
         )
         return
 
-    # Address found but failed hard validation (e.g. no street number)
     if not lead.get("address_valid", True):
         reason = lead.get("address_warning", "unknown issue")
         await channel.send(
-            f"⚠️ **FHB Comp Bot** — Address parsed as `{lead['address']}` but it looks incomplete ({reason}).\n"
-            f"If that's wrong, use `/comp [full address]` to run manually."
+            f"⚠️ **FHB Comp Bot** — Address parsed as `{lead['address']}` but looks incomplete ({reason}).\n"
+            f"Use `/comp [full address]` to run manually."
         )
         return
 
-    # Soft warning (e.g. no state detected) — run but flag it
-    if lead.get("address_warning"):
-        await channel.send(
-            f"⚠️ **FHB Comp Bot** — Address parsed as `{lead['address']}` — note: {lead['address_warning']}\n"
-            f"Running comp anyway. Use `/comp [full address]` to override if incorrect."
-        )
-
-    await post_comp_report(channel, lead)
+    await post_survey(channel, lead["address"])
 
 
 # ── Slash Commands ────────────────────────────────────────────────────────────
 
 @bot.tree.command(name="comp", description="Run a comp analysis on a property address")
-async def comp_slash(
-    interaction: discord.Interaction,
-    address: str,
-):
+async def comp_slash(interaction: discord.Interaction, address: str):
     await interaction.response.send_message(
-        f"🔍 Running comp for `{address}`..."
+        f"📋 Starting condition survey for `{address}`..."
     )
-    lead = {"address": address}
-    await post_comp_report(interaction.channel, lead)
+    await post_survey(interaction.channel, address)
 
 
-@bot.tree.command(name="recomp", description="Re-run comp analysis using this channel's Tickety data")
+@bot.tree.command(name="recomp", description="Re-run survey for this lead channel")
 async def recomp_slash(interaction: discord.Interaction):
-    await interaction.response.send_message("🔄 Re-pulling lead data and running fresh comp...")
     lead = await extract_lead_data(interaction.channel)
     if not lead or not lead.get("address"):
-        await interaction.followup.send(
-            "❌ Couldn't find address in this channel. Use `/comp [address]` instead."
+        await interaction.response.send_message(
+            "❌ No address found. Use `/comp [address]` instead.", ephemeral=True
         )
         return
-    await post_comp_report(interaction.channel, lead)
+    await interaction.response.send_message(f"🔄 Restarting survey for `{lead['address']}`...")
+    await post_survey(interaction.channel, lead["address"])
 
 
 # ── Run ───────────────────────────────────────────────────────────────────────
