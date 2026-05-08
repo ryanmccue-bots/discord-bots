@@ -41,7 +41,9 @@ channel_state: dict[int, dict] = {}
 def is_tickety_message(message: discord.Message) -> bool:
     if TICKETY_BOT_ID:
         return message.author.id == TICKETY_BOT_ID
-    return "tickety" in message.author.name.lower() or message.author.bot
+    # Fall back to name matching — never match on author.bot alone as that catches all bots
+    name = message.author.name.lower()
+    return "tickety" in name
 
 
 def extract_field_lines(content: str, label_pattern: str, max_lines: int = 2) -> str | None:
