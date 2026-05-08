@@ -149,6 +149,13 @@ def _all_answered(channel_id: int) -> bool:
 async def _check_and_fire(channel: discord.abc.Messageable, channel_id: int):
     """If all three questions answered, kick off comp analysis."""
     if _all_answered(channel_id):
+        state = channel_state.get(channel_id, {})
+        if not state.get("address"):
+            await channel.send(
+                "✅ **Survey complete** — but no address was found yet.\n"
+                "Use `/comp [full address]` to run the analysis."
+            )
+            return
         await channel.send("✅ **Survey complete — running comp analysis...**")
         asyncio.create_task(run_and_post_offers(channel))
 
@@ -718,31 +725,34 @@ async def on_guild_channel_create(channel):
     if not is_watched_channel(channel):
         return
 
-    # Wait for Tickety to post
+    # Post survey immediately with a placeholder address
+    # Initialize state now so buttons work right away
+    channel_state[channel.id] = {
+        "address": None,
+        "roof": None,
+        "hvac": None,
+        "condition": None,
+    }
+    await channel.send("🏠 **1. Roof condition?**", view=RoofView(channel.id))
+    await channel.send("❄️ **2. HVAC condition?**", view=HvacView(channel.id))
+    await channel.send("🔨 **3. Overall condition?**", view=ConditionView(channel.id))
+
+    # Resolve address from Tickety in the background
     await asyncio.sleep(8)
     lead = await extract_lead_data(channel)
 
-    # Retry once if not found
     if not lead or not lead.get("address"):
         await asyncio.sleep(7)
         lead = await extract_lead_data(channel)
 
-    if not lead or not lead.get("address"):
+    if lead and lead.get("address") and lead.get("address_valid", True):
+        channel_state[channel.id]["address"] = lead["address"]
+    else:
+        # Post a note so rep knows to provide address manually
         await channel.send(
-            "🏠 **FHB Comp Bot** — No address found in Tickety message.\n"
-            "Use `/comp [full address]` to run manually."
+            "⚠️ **FHB Comp Bot** — Couldn't read address from Tickety. "
+            "Use `/comp [full address]` after completing the survey, or run `/comp [address]` to restart."
         )
-        return
-
-    if not lead.get("address_valid", True):
-        reason = lead.get("address_warning", "unknown issue")
-        await channel.send(
-            f"⚠️ **FHB Comp Bot** — Address parsed as `{lead['address']}` but looks incomplete ({reason}).\n"
-            f"Use `/comp [full address]` to run manually."
-        )
-        return
-
-    await post_survey(channel, lead["address"])
 
 
 # ── Slash Commands ────────────────────────────────────────────────────────────
