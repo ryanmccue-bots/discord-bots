@@ -161,8 +161,7 @@ async def extract_lead_data(channel: discord.TextChannel) -> dict | None:
         return None
 
     try:
-        pins = await channel.pins()
-        for msg in pins:
+        async for msg in channel.pins():
             result = await try_message(msg)
             if result:
                 return result
@@ -188,6 +187,11 @@ def is_watched_channel(channel: discord.TextChannel) -> bool:
 
 
 # ── Survey UI ─────────────────────────────────────────────────────────────────
+
+def _all_answered(channel_id: int) -> bool:
+    """Return True if all three survey questions have been answered."""
+    state = channel_state.get(channel_id, {})
+    return all(state.get(k) for k in ["roof", "hvac", "condition"])
 
 
 class RoofView(discord.ui.View):
@@ -303,6 +307,7 @@ async def _check_and_fire_simple(channel: discord.abc.Messageable, channel_id: i
             "⚠️ No address found — use `/comp [full address]` to run the analysis."
         )
         return
+    await channel.send("✅ Survey complete — fetching comp data...")
     asyncio.create_task(run_and_post_offers(channel))
 
 COMP_SYSTEM_PROMPT = """You are an elite real estate comping analyst for a real estate wholesaling company.
