@@ -8,11 +8,13 @@ FHB Comp Bot v3
 
 import discord
 from discord.ext import commands
-from discord import app_commands
 import anthropic
 import asyncio
 import re
 import os
+import urllib.request
+import urllib.parse
+import json as json_lib
 from datetime import datetime
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -186,123 +188,19 @@ def is_watched_channel(channel: discord.TextChannel) -> bool:
 
 
 # ── Survey UI ─────────────────────────────────────────────────────────────────
-# Single message with all 3 questions — prevents other bots from interleaving.
-# Row 0: Roof label + answers
-# Row 1: HVAC answers
-# Row 2: Condition answers
-# Label buttons (disabled) use row headers in the message text instead.
 
-def _all_answered(channel_id: int) -> bool:
-    state = channel_state.get(channel_id, {})
-    return all(state.get(k) for k in ["roof", "hvac", "condition"])
-
-
-async def _check_and_fire(interaction: discord.Interaction, channel_id: int, view: discord.ui.View):
-    """If all three questions answered, lock the view and kick off comp analysis."""
-    if _all_answered(channel_id):
-        state = channel_state.get(channel_id, {})
-        # Disable all remaining buttons
-        for item in view.children:
-            item.disabled = True
-        summary = (
-            f"🏠 **Condition Survey — {state.get('address', 'unknown address')}**\n"
-            f"✅ All answered — running comp analysis...\n\n"
-            f"🏠 Roof: **{state['roof']}**\n"
-            f"❄️ HVAC: **{state['hvac']}**\n"
-            f"🔨 Condition: **{state['condition']}**"
-        )
-        await interaction.message.edit(content=summary, view=view)
-        if not state.get("address"):
-            await interaction.channel.send(
-                "⚠️ No address found — use `/comp [full address]` to run the analysis."
-            )
-            return
-        await interaction.channel.send("🔍 Running comp analysis...")
-        asyncio.create_task(run_and_post_offers(interaction.channel))
-
-
-class ConditionSurvey(discord.ui.View):
-    """Single-message survey with all 3 questions in one view."""
-
-    def __init__(self, channel_id: int):
-        super().__init__(timeout=3600)
-        self.channel_id = channel_id
-
-    def _survey_text(self) -> str:
-        state = channel_state.get(self.channel_id, {})
-        address = state.get("address", "")
-        roof = f"**{state['roof']}** ✅" if state.get("roof") else "_tap below_"
-        hvac = f"**{state['hvac']}** ✅" if state.get("hvac") else "_tap below_"
-        cond = f"**{state['condition']}** ✅" if state.get("condition") else "_tap below_"
-        addr_suffix = f" — {address}" if address else ""
-        header = f"🏠 **Condition Survey{addr_suffix}**"
-        return (
-            f"{header}\n"
-            f"\n🏠 **1. Roof:** {roof}"
-            f"\n❄️ **2. HVAC:** {hvac}"
-            f"\n🔨 **3. Condition:** {cond}"
-        )
-
-    async def _pick(self, interaction: discord.Interaction, field: str, value: str):
-        channel_state[self.channel_id][field] = value
-        # Update button styles for this field's row
-        field_rows = {"roof": 0, "hvac": 1, "condition": 2}
-        target_row = field_rows[field]
-        for item in self.children:
-            if item.row == target_row:
-                item.style = discord.ButtonStyle.success if item.label == value else discord.ButtonStyle.secondary
-                item.disabled = True
-        await interaction.response.edit_message(content=self._survey_text(), view=self)
-        await _check_and_fire(interaction, self.channel_id, self)
-
-    # ── Roof (row 0) ──────────────────────────────────────────────────────────
-    @discord.ui.button(label="New", style=discord.ButtonStyle.primary, row=0)
-    async def roof_new(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "roof", "New")
-
-    @discord.ui.button(label="Good", style=discord.ButtonStyle.primary, row=0)
-    async def roof_good(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "roof", "Good")
-
-    @discord.ui.button(label="Needs Replacing", style=discord.ButtonStyle.primary, row=0)
-    async def roof_replace(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "roof", "Needs Replacing")
-
-    # ── HVAC (row 1) ──────────────────────────────────────────────────────────
-    @discord.ui.button(label="New", style=discord.ButtonStyle.primary, row=1)
-    async def hvac_new(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "hvac", "New")
-
-    @discord.ui.button(label="Good", style=discord.ButtonStyle.primary, row=1)
-    async def hvac_good(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "hvac", "Good")
-
-    @discord.ui.button(label="Needs Replacing", style=discord.ButtonStyle.primary, row=1)
-    async def hvac_replace(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "hvac", "Needs Replacing")
-
-    # ── Condition (row 2) ─────────────────────────────────────────────────────
-    @discord.ui.button(label="Needs Full Rehab", style=discord.ButtonStyle.danger, row=2)
-    async def cond_full(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "condition", "Needs Full Rehab")
-
-    @discord.ui.button(label="Needs Some Work", style=discord.ButtonStyle.primary, row=2)
-    async def cond_some(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "condition", "Needs Some Work")
-
-    @discord.ui.button(label="Needs Little Work", style=discord.ButtonStyle.success, row=2)
-    async def cond_little(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "condition", "Needs Little Work")
-
-
-# ── Three separate per-question views (used by post_survey) ──────────────────
 
 class RoofView(discord.ui.View):
-    def __init__(self, channel_id: int):
+    def __init__(self, channel_id: int, version: int = 0):
         super().__init__(timeout=3600)
         self.channel_id = channel_id
+        self.version = version
 
     async def _pick(self, interaction: discord.Interaction, value: str):
+        state = channel_state.get(self.channel_id, {})
+        if state.get("survey_version", 0) != self.version:
+            await interaction.response.defer()
+            return  # Stale survey — ignore
         channel_state[self.channel_id]["roof"] = value
         for item in self.children:
             item.disabled = True
@@ -326,11 +224,16 @@ class RoofView(discord.ui.View):
 
 
 class HvacView(discord.ui.View):
-    def __init__(self, channel_id: int):
+    def __init__(self, channel_id: int, version: int = 0):
         super().__init__(timeout=3600)
         self.channel_id = channel_id
+        self.version = version
 
     async def _pick(self, interaction: discord.Interaction, value: str):
+        state = channel_state.get(self.channel_id, {})
+        if state.get("survey_version", 0) != self.version:
+            await interaction.response.defer()
+            return
         channel_state[self.channel_id]["hvac"] = value
         for item in self.children:
             item.disabled = True
@@ -354,11 +257,16 @@ class HvacView(discord.ui.View):
 
 
 class ConditionView(discord.ui.View):
-    def __init__(self, channel_id: int):
+    def __init__(self, channel_id: int, version: int = 0):
         super().__init__(timeout=3600)
         self.channel_id = channel_id
+        self.version = version
 
     async def _pick(self, interaction: discord.Interaction, value: str):
+        state = channel_state.get(self.channel_id, {})
+        if state.get("survey_version", 0) != self.version:
+            await interaction.response.defer()
+            return
         channel_state[self.channel_id]["condition"] = value
         for item in self.children:
             item.disabled = True
@@ -383,15 +291,19 @@ class ConditionView(discord.ui.View):
 
 async def _check_and_fire_simple(channel: discord.abc.Messageable, channel_id: int):
     """Fire comp analysis once all 3 separate question views are answered."""
-    if _all_answered(channel_id):
-        state = channel_state.get(channel_id, {})
-        if not state.get("address"):
-            await channel.send(
-                "⚠️ No address found — use `/comp [full address]` to run the analysis."
-            )
-            return
-        await channel.send("🔍 Running comp analysis...")
-        asyncio.create_task(run_and_post_offers(channel))
+    if not _all_answered(channel_id):
+        return
+    state = channel_state.get(channel_id, {})
+    # Prevent double-fire if multiple buttons answered near-simultaneously
+    if state.get("fired"):
+        return
+    channel_state[channel_id]["fired"] = True
+    if not state.get("address"):
+        await channel.send(
+            "⚠️ No address found — use `/comp [full address]` to run the analysis."
+        )
+        return
+    asyncio.create_task(run_and_post_offers(channel))
 
 COMP_SYSTEM_PROMPT = """You are an elite real estate comping analyst for a real estate wholesaling company.
 You have deep knowledge of ARV calculation, repair estimation, and MAO formulas.
@@ -465,10 +377,6 @@ def novation_eligible(roof: str, hvac: str, condition: str) -> bool:
 
 
 # ── Rentcast API ──────────────────────────────────────────────────────────────
-
-import urllib.request
-import urllib.parse
-import json as json_lib
 
 def rentcast_value_estimate(address: str, comp_count: int = 10) -> dict | None:
     """
@@ -573,12 +481,6 @@ You may use web search only for market conditions (DOM, inventory, sale-to-list 
 ## RENTCAST DATA
 {data_section}
 
-## CONDITION (from rep survey)
-- Roof: {roof}
-- HVAC: {hvac}
-- Overall Condition: {condition}
-- Estimated Condition Score: {score}/10 ({tier} rehab)
-
 Then produce the analysis in this EXACT format:
 
 ---
@@ -669,10 +571,23 @@ def parse_arv_from_report(report: str) -> int | None:
 
 
 def parse_market_type(report: str) -> str:
-    """Extract market type from report."""
-    match = re.search(r"Type:\s+(.+)", report)
+    """
+    Extract market type from report. Looks for the Type: line inside
+    the MARKET code block and normalises to lowercase for matching.
+    Falls back to keyword scanning the whole report, then 'neutral'.
+    """
+    # Primary: match inside market code block
+    match = re.search(r"Type:\s+([^\n`]+)", report)
     if match:
         return match.group(1).strip().lower()
+    # Secondary: keyword scan
+    lower = report.lower()
+    if "seller" in lower and ("hot" in lower or "extreme" in lower):
+        return "hot seller's"
+    if "seller" in lower:
+        return "seller's"
+    if "buyer" in lower:
+        return "buyer's"
     return "neutral"
 
 
@@ -711,6 +626,7 @@ def build_offer_card(
     hvac: str,
     condition: str,
     confidence: str,
+    data_source: str = "web search",
 ) -> str:
     cash_pct = cash_investment_pct(market_type)
     cash_gross = int(arv * cash_pct)
@@ -754,7 +670,7 @@ def build_offer_card(
             "> Roof or HVAC needs replacing, or property needs full rehab.",
         ]
 
-    lines += ["", "---", "*💬 Full comp detail in thread below ↓*"]
+    lines += ["", "---", f"*💬 Full comp detail in thread below ↓ · Data: {data_source}*"]
     return "\n".join(lines)
 
 
@@ -834,8 +750,7 @@ def run_comp_analysis(address: str, prompt: str, use_web: bool = True) -> str:
             model="claude-sonnet-4-6",
             max_tokens=4000,
             system=[{"type": "text", "text": COMP_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-            tools=tools if tools else None,
-            messages=[{"role": "user", "content": [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}]}],
+                messages=[{"role": "user", "content": [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}]}],
         )
         parts = [block.text for block in response.content if hasattr(block, "text")]
         raw = "\n".join(parts).strip()
@@ -857,22 +772,36 @@ async def run_and_post_offers(channel: discord.TextChannel):
 
     score, tier = condition_to_score(roof, hvac, condition)
 
-    # Fetch Rentcast data first
-    loop = asyncio.get_event_loop()
-    rentcast_raw = await loop.run_in_executor(
-        None, lambda: rentcast_value_estimate(address, comp_count=15)
-    )
+    # Fetch Rentcast data first (15s timeout)
+    loop = asyncio.get_running_loop()
+    try:
+        rentcast_raw = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: rentcast_value_estimate(address, comp_count=15)),
+            timeout=15.0
+        )
+    except asyncio.TimeoutError:
+        rentcast_raw = None
+        print(f"Rentcast timed out for {address}")
     if rentcast_raw:
         rentcast_str = format_rentcast_data(rentcast_raw)
-        data_source = "Rentcast API"
+        data_source = "📡 Rentcast API"
     else:
         rentcast_str = ""
-        data_source = "web search (Rentcast unavailable)"
+        data_source = "🌐 web search (Rentcast unavailable)"
+
+    await channel.send(f"🔍 Running comp analysis via {data_source}...")
 
     prompt = build_comp_prompt(address, roof, hvac, condition, rentcast_str)
 
-    # Run Claude analysis
-    report = await loop.run_in_executor(None, lambda: run_comp_analysis(address, prompt, use_web=not bool(rentcast_raw)))
+    # Run Claude analysis (120s timeout)
+    try:
+        report = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: run_comp_analysis(address, prompt, use_web=not bool(rentcast_raw))),
+            timeout=120.0
+        )
+    except asyncio.TimeoutError:
+        await channel.send("⚠️ Comp analysis timed out. Please try `/recomp` again.")
+        return
 
     # Parse ARV and market from report
     arv = parse_arv_from_report(report)
@@ -882,59 +811,68 @@ async def run_and_post_offers(channel: discord.TextChannel):
     conf_match = re.search(r"Confidence:\s*(HIGH|MEDIUM|LOW|VERY LOW)", report)
     confidence = conf_match.group(1) if conf_match else "LOW"
 
-    if not arv:
-        await channel.send(
-            f"⚠️ **Could not parse ARV from comp analysis.**\n"
-            f"The full report has been posted in a thread. Please calculate offer manually."
-        )
-    else:
-        # Calculate repair estimate
-        _, repairs_mid, _ = repair_range(score)
+    # Calculate repair estimate using actual sqft from Rentcast if available
+    sqft = 1200
+    if rentcast_raw:
+        subj = rentcast_raw.get("subjectProperty", {})
+        sqft = int(subj.get("squareFootage") or 1200)
+    _, repairs_mid, _ = repair_range(score, sqft_estimate=sqft)
 
-        # Build and post offer card
+    if arv:
         offer_card = build_offer_card(
             address, arv, repairs_mid, market_type,
-            roof, hvac, condition, confidence
+            roof, hvac, condition, confidence, data_source
         )
         offer_msg = await channel.send(offer_card)
-
-        # Pin the offer card
         try:
             await offer_msg.pin()
         except Exception:
             pass
+    else:
+        offer_msg = await channel.send(
+            "⚠️ **Could not parse ARV** — see thread for full comp detail. Calculate offer manually."
+        )
 
-        # Create thread and post full detail
-        try:
-            thread = await offer_msg.create_thread(
-                name=f"Comp Detail — {address[:40]}",
-                auto_archive_duration=1440
-            )
-            chunks = split_report(report)
-            for i, chunk in enumerate(chunks):
-                await thread.send(chunk)
-                await asyncio.sleep(0.4)
-        except Exception as e:
-            # If thread creation fails, post detail in channel
-            await channel.send(f"⚠️ Thread creation failed ({e}). Posting detail here:")
-            for chunk in split_report(report):
-                await channel.send(chunk)
-                await asyncio.sleep(0.4)
+    # Always create thread with full comp detail
+    try:
+        thread = await offer_msg.create_thread(
+            name=f"Comp Detail — {address[:40]}",
+            auto_archive_duration=1440
+        )
+        await thread.send(f"*Data source: {data_source}*")
+        chunks = split_report(report)
+        for chunk in chunks:
+            await thread.send(chunk)
+            await asyncio.sleep(0.4)
+    except Exception as e:
+        await channel.send(f"⚠️ Thread creation failed ({e}). Posting detail here:")
+        for chunk in split_report(report):
+            await channel.send(chunk)
+            await asyncio.sleep(0.4)
+
+    # Clean up state — no longer needed after comp completes
+    channel_state.pop(channel.id, None)
 
 
 # ── Survey Poster ─────────────────────────────────────────────────────────────
 
 async def post_survey(channel: discord.TextChannel, address: str):
-    """Post three separate survey questions. Called after other bots have finished posting."""
+    """Post three separate survey questions. Resets channel state on each call."""
+    # Reset state — this invalidates any previous survey buttons for this channel
+    # by bumping the survey_version counter. Views check their version before firing.
+    prev_version = channel_state.get(channel.id, {}).get("survey_version", 0)
     channel_state[channel.id] = {
         "address": address,
         "roof": None,
         "hvac": None,
         "condition": None,
+        "survey_version": prev_version + 1,
+        "fired": False,  # prevent double-fire
     }
-    await channel.send("🏠 **1. Roof condition?**", view=RoofView(channel.id))
-    await channel.send("❄️ **2. HVAC condition?**", view=HvacView(channel.id))
-    await channel.send("🔨 **3. Overall condition?**", view=ConditionView(channel.id))
+    version = channel_state[channel.id]["survey_version"]
+    await channel.send("🏠 **1. Roof condition?**", view=RoofView(channel.id, version))
+    await channel.send("❄️ **2. HVAC condition?**", view=HvacView(channel.id, version))
+    await channel.send("🔨 **3. Overall condition?**", view=ConditionView(channel.id, version))
 
 
 # ── Bot Events ────────────────────────────────────────────────────────────────
@@ -973,9 +911,21 @@ async def on_guild_channel_create(channel):
 
 @bot.tree.command(name="comp", description="Run a comp analysis on a property address")
 async def comp_slash(interaction: discord.Interaction, address: str):
-    await interaction.response.send_message(
-        f"📋 Starting condition survey for `{address}`..."
-    )
+    valid, warning = validate_address(address)
+    if not valid:
+        await interaction.response.send_message(
+            f"⚠️ Address `{address}` looks invalid ({warning}). Please provide a full address.",
+            ephemeral=True
+        )
+        return
+    if warning:
+        await interaction.response.send_message(
+            f"📋 Starting survey for `{address}` _(note: {warning})_"
+        )
+    else:
+        await interaction.response.send_message(
+            f"📋 Starting condition survey for `{address}`..."
+        )
     await post_survey(interaction.channel, address)
 
 
