@@ -18,6 +18,7 @@ from datetime import datetime
 # ── Config ────────────────────────────────────────────────────────────────────
 DISCORD_TOKEN     = os.environ.get("DISCORD_TOKEN", "YOUR_DISCORD_TOKEN_HERE")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "YOUR_ANTHROPIC_API_KEY_HERE")
+RENTCAST_API_KEY  = os.environ.get("RENTCAST_API_KEY", "")
 
 TICKETY_BOT_ID    = 718493970652594217  # Tickety's Discord user ID
 WATCH_CATEGORIES  = []         # e.g. ["Leads"] — leave empty for all categories
@@ -463,9 +464,97 @@ def novation_eligible(roof: str, hvac: str, condition: str) -> bool:
     return roof_ok and hvac_ok and cond_ok
 
 
-def build_comp_prompt(address: str, roof: str, hvac: str, condition: str) -> str:
+# ── Rentcast API ──────────────────────────────────────────────────────────────
+
+import urllib.request
+import urllib.parse
+import json as json_lib
+
+def rentcast_value_estimate(address: str, comp_count: int = 10) -> dict | None:
+    """
+    Call Rentcast Value Estimate endpoint.
+    Returns the full response dict, or None on failure.
+    """
+    if not RENTCAST_API_KEY:
+        return None
+    params = urllib.parse.urlencode({
+        "address": address,
+        "compCount": comp_count,
+        "lookupSubjectAttributes": "true",
+    })
+    url = f"https://api.rentcast.io/v1/avm/value?{params}"
+    req = urllib.request.Request(url, headers={"X-Api-Key": RENTCAST_API_KEY})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json_lib.loads(resp.read().decode())
+    except Exception as e:
+        print(f"Rentcast API error: {e}")
+        return None
+
+
+def format_rentcast_data(data: dict) -> str:
+    """
+    Convert Rentcast API response into a structured text block
+    for Claude to analyze — no web searching needed.
+    """
+    if not data:
+        return "No Rentcast data available."
+
+    lines = []
+
+    # Subject property
+    subj = data.get("subjectProperty", {})
+    if subj:
+        lines.append("## SUBJECT PROPERTY (from Rentcast)")
+        lines.append(f"Address: {subj.get('formattedAddress', 'Unknown')}")
+        lines.append(f"Beds: {subj.get('bedrooms', 'Unknown')} | Baths: {subj.get('bathrooms', 'Unknown')} | Sqft: {subj.get('squareFootage', 'Unknown')}")
+        lines.append(f"Year Built: {subj.get('yearBuilt', 'Unknown')} | Lot: {subj.get('lotSize', 'Unknown')} sqft")
+        lines.append(f"Property Type: {subj.get('propertyType', 'Unknown')}")
+        lines.append("")
+
+    # AVM estimate
+    price = data.get("price")
+    price_low = data.get("priceLow")
+    price_high = data.get("priceHigh")
+    if price:
+        lines.append("## RENTCAST AVM ESTIMATE")
+        lines.append(f"Estimated Value: ${price:,}")
+        if price_low and price_high:
+            lines.append(f"Range: ${price_low:,} – ${price_high:,}")
+        lines.append("")
+
+    # Comps
+    comps = data.get("comparables", [])
+    if comps:
+        lines.append(f"## COMPARABLE SALES ({len(comps)} found by Rentcast)")
+        for i, comp in enumerate(comps, 1):
+            addr = comp.get("formattedAddress", "Unknown")
+            price_c = comp.get("price", 0)
+            sqft_c = comp.get("squareFootage", 0)
+            ppsf = int(price_c / sqft_c) if sqft_c else 0
+            beds_c = comp.get("bedrooms", "?")
+            baths_c = comp.get("bathrooms", "?")
+            year_c = comp.get("yearBuilt", "?")
+            status = comp.get("status", "Unknown")
+            listed = comp.get("listedDate", "")[:10] if comp.get("listedDate") else ""
+            removed = comp.get("removedDate", "")[:10] if comp.get("removedDate") else ""
+            dist = comp.get("distance", 0)
+            corr = comp.get("correlation", 0)
+            lines.append(
+                f"Comp {i}: {addr} | ${price_c:,} | {sqft_c} sqft | ${ppsf}/sqft | "
+                f"{beds_c}bd/{baths_c}ba | Built {year_c} | {status} | "
+                f"Listed: {listed} | Sold: {removed} | {dist:.2f}mi away | "
+                f"Rentcast correlation: {corr:.2f}"
+            )
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def build_comp_prompt(address: str, roof: str, hvac: str, condition: str, rentcast_data: str = "") -> str:
     score, tier = condition_to_score(roof, hvac, condition)
     date_str = datetime.now().strftime("%B %d, %Y")
+    data_section = rentcast_data if rentcast_data else "No Rentcast data available — use web search as fallback."
 
     return f"""Perform a complete comp analysis for this wholesale lead.
 
@@ -477,10 +566,18 @@ def build_comp_prompt(address: str, roof: str, hvac: str, condition: str) -> str
 - Estimated Condition Score: {score}/10 ({tier} rehab)
 
 ## YOUR TASK
-Use web search to find:
-1. Subject property details (beds, baths, sqft, year built, lot size) from Zillow/Redfin/public records
-2. Market conditions for the zip code (DOM, inventory, sale-to-list ratio)
-3. Sold comps — fully renovated, same area, last 6 months where possible
+You have been provided with structured property and comp data from the Rentcast API below.
+Use this data as your primary source — DO NOT use web search for comps or property details.
+You may use web search only for market conditions (DOM, inventory, sale-to-list ratio) if not available in the Rentcast data.
+
+## RENTCAST DATA
+{data_section}
+
+## CONDITION (from rep survey)
+- Roof: {roof}
+- HVAC: {hvac}
+- Overall Condition: {condition}
+- Estimated Condition Score: {score}/10 ({tier} rehab)
 
 Then produce the analysis in this EXACT format:
 
@@ -730,34 +827,15 @@ def split_report(report: str, max_len: int = 1900) -> list[str]:
 
 # ── Core Analysis Runner ──────────────────────────────────────────────────────
 
-def run_comp_analysis(address: str, prompt: str) -> str:
+def run_comp_analysis(address: str, prompt: str, use_web: bool = True) -> str:
     try:
+        tools = [{"type": "web_search_20250305", "name": "web_search"}] if use_web else []
         response = anthropic_client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=4000,
-            # Cache the system prompt — it's identical on every call
-            system=[
-                {
-                    "type": "text",
-                    "text": COMP_SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt,
-                            # Cache the methodology portion of the prompt too
-                            # (everything up to the address-specific part is reusable)
-                            "cache_control": {"type": "ephemeral"},
-                        }
-                    ],
-                }
-            ],
+            system=[{"type": "text", "text": COMP_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            tools=tools if tools else None,
+            messages=[{"role": "user", "content": [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}]}],
         )
         parts = [block.text for block in response.content if hasattr(block, "text")]
         raw = "\n".join(parts).strip()
@@ -772,17 +850,29 @@ async def run_and_post_offers(channel: discord.TextChannel):
     if not state:
         return
 
-    address  = state["address"]
-    roof     = state["roof"]
-    hvac     = state["hvac"]
+    address   = state["address"]
+    roof      = state["roof"]
+    hvac      = state["hvac"]
     condition = state["condition"]
 
     score, tier = condition_to_score(roof, hvac, condition)
-    prompt = build_comp_prompt(address, roof, hvac, condition)
 
-    # Run analysis in executor
+    # Fetch Rentcast data first
     loop = asyncio.get_event_loop()
-    report = await loop.run_in_executor(None, lambda: run_comp_analysis(address, prompt))
+    rentcast_raw = await loop.run_in_executor(
+        None, lambda: rentcast_value_estimate(address, comp_count=15)
+    )
+    if rentcast_raw:
+        rentcast_str = format_rentcast_data(rentcast_raw)
+        data_source = "Rentcast API"
+    else:
+        rentcast_str = ""
+        data_source = "web search (Rentcast unavailable)"
+
+    prompt = build_comp_prompt(address, roof, hvac, condition, rentcast_str)
+
+    # Run Claude analysis
+    report = await loop.run_in_executor(None, lambda: run_comp_analysis(address, prompt, use_web=not bool(rentcast_raw)))
 
     # Parse ARV and market from report
     arv = parse_arv_from_report(report)
