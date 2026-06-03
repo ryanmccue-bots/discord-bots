@@ -1,8 +1,8 @@
 """
 FHB Comp Bot v3
-- Tickety creates channel → bot posts condition survey with buttons
-- Rep fills in ROOF / HVAC / CONDITION
-- Bot runs comp analysis and posts short offer card in channel
+- Tickety creates channel → bot waits for address → posts offer type selector
+- Rep picks Cash / Novation / Both, enters repair cost via modal popup
+- Bot fetches Rentcast comp data, runs Claude analysis, posts offer card
 - Full comp detail posted in a thread for Alec to review
 """
 
@@ -35,7 +35,7 @@ intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# In-memory store: channel_id → {address, roof, hvac, condition, survey_message_id}
+# In-memory store: channel_id → {address, repairs, offer_type, fired}
 channel_state: dict[int, dict] = {}
 
 
@@ -289,62 +289,6 @@ CRITICAL OUTPUT RULES:
 8. DO NOT include any MAO calculation, MAO calculator, or offer price in your report. The offer is calculated separately by the system. Only provide ARV, repairs, market data, comps, and flags."""
 
 
-def condition_to_score(roof: str, hvac: str, condition: str) -> tuple[int, str]:
-    """Convert survey answers to a condition score and repair tier."""
-    score = 5  # baseline
-
-    if roof == "New":
-        score += 1
-    elif roof == "Needs Replacing":
-        score -= 1
-
-    if hvac == "New":
-        score += 1
-    elif hvac == "Needs Replacing":
-        score -= 1
-
-    if condition == "Needs Little Work":
-        score += 1
-        tier = "light"
-    elif condition == "Needs Some Work":
-        tier = "medium"
-    elif condition == "Needs Full Rehab":
-        score -= 2
-        tier = "heavy"
-    else:
-        tier = "medium"
-
-    score = max(1, min(10, score))
-    return score, tier
-
-
-def repair_range(score: int, sqft_estimate: int = 1200) -> tuple[int, int, int]:
-    """Return low/mid/high repair estimates based on condition score."""
-    if score >= 8:
-        per_sqft = (5, 12)
-    elif score >= 6:
-        per_sqft = (15, 25)
-    elif score >= 4:
-        per_sqft = (25, 40)
-    elif score >= 2:
-        per_sqft = (40, 60)
-    else:
-        per_sqft = (60, 100)
-
-    low = int(sqft_estimate * per_sqft[0])
-    high = int(sqft_estimate * per_sqft[1])
-    mid = int((low + high) / 2)
-    return low, mid, high
-
-
-def novation_eligible(roof: str, hvac: str, condition: str) -> bool:
-    """Novation only if roof+hvac are New/Good AND condition is not full rehab."""
-    roof_ok = roof in ("New", "Good")
-    hvac_ok = hvac in ("New", "Good")
-    cond_ok = condition != "Needs Full Rehab"
-    return roof_ok and hvac_ok and cond_ok
-
-
 # ── Rentcast API ──────────────────────────────────────────────────────────────
 
 def rentcast_value_estimate(address: str, comp_count: int = 10) -> dict | None:
@@ -468,14 +412,11 @@ Spread:        [X]% → [HIGH/MEDIUM/LOW/VERY LOW] confidence
 
 ---
 
-## 🔨 CONDITION & REPAIRS
+## 🔨 REPAIRS
 ```
-Condition:  {score}/10 — {condition} · Roof: {roof} · HVAC: {hvac}
-Low:        $[X]
-Mid:        $[X]
-High:       $[X]
+Rep Estimate:  ${repairs:,}
 ```
-> [One sentence, max 100 chars — what's driving the estimate]
+> [One sentence on what the repair scope likely covers based on property data]
 
 ---
 
@@ -708,13 +649,15 @@ def split_report(report: str, max_len: int = 1900) -> list[str]:
 
 def run_comp_analysis(address: str, prompt: str, use_web: bool = True) -> str:
     try:
-        tools = [{"type": "web_search_20250305", "name": "web_search"}] if use_web else []
-        response = anthropic_client.messages.create(
+        kwargs = dict(
             model="claude-sonnet-4-6",
             max_tokens=4000,
             system=[{"type": "text", "text": COMP_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}]}],
+            messages=[{"role": "user", "content": [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}]}],
         )
+        if use_web:
+            kwargs["tools"] = [{"type": "web_search_20250305", "name": "web_search"}]
+        response = anthropic_client.messages.create(**kwargs)
         parts = [block.text for block in response.content if hasattr(block, "text")]
         raw = "\n".join(parts).strip()
         return strip_preamble(raw) or "⚠️ No analysis generated."
