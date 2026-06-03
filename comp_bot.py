@@ -188,127 +188,91 @@ def is_watched_channel(channel: discord.TextChannel) -> bool:
 
 # ── Survey UI ─────────────────────────────────────────────────────────────────
 
-def _all_answered(channel_id: int) -> bool:
-    """Return True if all three survey questions have been answered."""
-    state = channel_state.get(channel_id, {})
-    return all(state.get(k) for k in ["roof", "hvac", "condition"])
+# ── Repair Cost Modal ──────────────────────────────────────────────────────────
 
+class RepairCostModal(discord.ui.Modal, title="Estimated Repair Cost"):
+    repair_cost = discord.ui.TextInput(
+        label="Repair Cost ($)",
+        placeholder="e.g. 25000",
+        required=True,
+        max_length=12,
+    )
 
-class RoofView(discord.ui.View):
-    def __init__(self, channel_id: int, version: int = 0):
-        super().__init__(timeout=3600)
+    def __init__(self, channel_id: int, offer_type: str):
+        super().__init__()
         self.channel_id = channel_id
-        self.version = version
+        self.offer_type = offer_type
 
-    async def _pick(self, interaction: discord.Interaction, value: str):
-        state = channel_state.get(self.channel_id, {})
-        if state.get("survey_version", 0) != self.version:
-            await interaction.response.defer()
-            return  # Stale survey — ignore
-        channel_state[self.channel_id]["roof"] = value
-        for item in self.children:
-            item.disabled = True
-            item.style = discord.ButtonStyle.success if item.label == value else discord.ButtonStyle.secondary
-        await interaction.response.edit_message(
-            content=f"🏠 **1. Roof:** ✅ {value}", view=self
-        )
-        await _check_and_fire_simple(interaction.channel, self.channel_id)
-
-    @discord.ui.button(label="New", style=discord.ButtonStyle.primary)
-    async def new(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "New")
-
-    @discord.ui.button(label="Good", style=discord.ButtonStyle.primary)
-    async def good(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "Good")
-
-    @discord.ui.button(label="Needs Replacing", style=discord.ButtonStyle.primary)
-    async def replace(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "Needs Replacing")
-
-
-class HvacView(discord.ui.View):
-    def __init__(self, channel_id: int, version: int = 0):
-        super().__init__(timeout=3600)
-        self.channel_id = channel_id
-        self.version = version
-
-    async def _pick(self, interaction: discord.Interaction, value: str):
-        state = channel_state.get(self.channel_id, {})
-        if state.get("survey_version", 0) != self.version:
-            await interaction.response.defer()
+    async def on_submit(self, interaction: discord.Interaction):
+        # Parse repair cost — strip $, commas, spaces
+        raw = self.repair_cost.value.strip().replace("$", "").replace(",", "").replace(" ", "")
+        try:
+            repairs = int(float(raw))
+        except ValueError:
+            await interaction.response.send_message(
+                f"⚠️ Couldn't parse `{self.repair_cost.value}` as a number. Please try again.",
+                ephemeral=True
+            )
             return
-        channel_state[self.channel_id]["hvac"] = value
-        for item in self.children:
-            item.disabled = True
-            item.style = discord.ButtonStyle.success if item.label == value else discord.ButtonStyle.secondary
+
+        state = channel_state.get(self.channel_id, {})
+        if state.get("fired"):
+            await interaction.response.send_message(
+                "⚠️ Comp already running — no need to resubmit.",
+                ephemeral=True
+            )
+            return
+
+        channel_state[self.channel_id]["repairs"] = repairs
+        channel_state[self.channel_id]["offer_type"] = self.offer_type
+        channel_state[self.channel_id]["fired"] = True
+
+        fmt_repairs = f"${repairs:,}"
+        offer_label = {"cash": "Cash only", "novation": "Novation only", "both": "Cash + Novation"}[self.offer_type]
+
         await interaction.response.edit_message(
-            content=f"❄️ **2. HVAC:** ✅ {value}", view=self
+            content=(
+                f"💰 **Offer type:** {offer_label}\n"
+                f"🔨 **Repairs:** {fmt_repairs}\n\n"
+                f"✅ Running comp analysis..."
+            ),
+            view=None
         )
-        await _check_and_fire_simple(interaction.channel, self.channel_id)
-
-    @discord.ui.button(label="New", style=discord.ButtonStyle.primary)
-    async def new(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "New")
-
-    @discord.ui.button(label="Good", style=discord.ButtonStyle.primary)
-    async def good(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "Good")
-
-    @discord.ui.button(label="Needs Replacing", style=discord.ButtonStyle.primary)
-    async def replace(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "Needs Replacing")
+        asyncio.create_task(run_and_post_offers(interaction.channel))
 
 
-class ConditionView(discord.ui.View):
-    def __init__(self, channel_id: int, version: int = 0):
+# ── Offer Type Selector ────────────────────────────────────────────────────────
+
+class OfferTypeView(discord.ui.View):
+    """Step 1: Rep picks which offer types to generate, then gets repair modal."""
+
+    def __init__(self, channel_id: int):
         super().__init__(timeout=3600)
         self.channel_id = channel_id
-        self.version = version
 
-    async def _pick(self, interaction: discord.Interaction, value: str):
+    async def _launch_modal(self, interaction: discord.Interaction, offer_type: str):
         state = channel_state.get(self.channel_id, {})
-        if state.get("survey_version", 0) != self.version:
-            await interaction.response.defer()
+        if not state.get("address"):
+            await interaction.response.send_message(
+                "⚠️ No address found yet — use `/comp [full address]` instead.",
+                ephemeral=True
+            )
             return
-        channel_state[self.channel_id]["condition"] = value
-        for item in self.children:
-            item.disabled = True
-            item.style = discord.ButtonStyle.success if item.label == value else discord.ButtonStyle.secondary
-        await interaction.response.edit_message(
-            content=f"🔨 **3. Condition:** ✅ {value}", view=self
-        )
-        await _check_and_fire_simple(interaction.channel, self.channel_id)
+        await interaction.response.send_modal(RepairCostModal(self.channel_id, offer_type))
 
-    @discord.ui.button(label="Needs Full Rehab", style=discord.ButtonStyle.danger)
-    async def full(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "Needs Full Rehab")
+    @discord.ui.button(label="💰 Cash Offer", style=discord.ButtonStyle.primary)
+    async def cash(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._launch_modal(interaction, "cash")
 
-    @discord.ui.button(label="Needs Some Work", style=discord.ButtonStyle.primary)
-    async def some(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "Needs Some Work")
+    @discord.ui.button(label="📋 Novation Offer", style=discord.ButtonStyle.primary)
+    async def novation(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._launch_modal(interaction, "novation")
 
-    @discord.ui.button(label="Needs Little Work", style=discord.ButtonStyle.success)
-    async def little(self, i: discord.Interaction, b: discord.ui.Button):
-        await self._pick(i, "Needs Little Work")
+    @discord.ui.button(label="✨ Both", style=discord.ButtonStyle.success)
+    async def both(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._launch_modal(interaction, "both")
 
 
-async def _check_and_fire_simple(channel: discord.abc.Messageable, channel_id: int):
-    """Fire comp analysis once all 3 separate question views are answered."""
-    if not _all_answered(channel_id):
-        return
-    state = channel_state.get(channel_id, {})
-    # Prevent double-fire if multiple buttons answered near-simultaneously
-    if state.get("fired"):
-        return
-    channel_state[channel_id]["fired"] = True
-    if not state.get("address"):
-        await channel.send(
-            "⚠️ No address found — use `/comp [full address]` to run the analysis."
-        )
-        return
-    await channel.send("✅ Survey complete — fetching comp data...")
-    asyncio.create_task(run_and_post_offers(channel))
 
 COMP_SYSTEM_PROMPT = """You are an elite real estate comping analyst for a real estate wholesaling company.
 You have deep knowledge of ARV calculation, repair estimation, and MAO formulas.
@@ -464,19 +428,17 @@ def format_rentcast_data(data: dict) -> str:
     return "\n".join(lines)
 
 
-def build_comp_prompt(address: str, roof: str, hvac: str, condition: str, rentcast_data: str = "") -> str:
-    score, tier = condition_to_score(roof, hvac, condition)
+def build_comp_prompt(address: str, repairs: int, offer_type: str, rentcast_data: str = "") -> str:
     date_str = datetime.now().strftime("%B %d, %Y")
     data_section = rentcast_data if rentcast_data else "No Rentcast data available — use web search as fallback."
+    offer_label = {"cash": "Cash only", "novation": "Novation only", "both": "Cash + Novation"}.get(offer_type, "Cash")
 
     return f"""Perform a complete comp analysis for this wholesale lead.
 
 ## SUBJECT PROPERTY
 - Address: {address}
-- Roof: {roof}
-- HVAC: {hvac}
-- Overall Condition: {condition}
-- Estimated Condition Score: {score}/10 ({tier} rehab)
+- Estimated Repairs: ${repairs:,} (provided by rep)
+- Offer Type Requested: {offer_label}
 
 ## YOUR TASK
 You have been provided with structured property and comp data from the Rentcast API below.
@@ -625,57 +587,53 @@ def novation_investment_pct(market_type: str) -> float:
 def build_offer_card(
     address: str,
     arv: int,
-    repairs_mid: int,
+    repairs: int,
     market_type: str,
-    roof: str,
-    hvac: str,
-    condition: str,
+    offer_type: str,
     confidence: str,
     data_source: str = "web search",
 ) -> str:
     cash_pct = cash_investment_pct(market_type)
     cash_gross = int(arv * cash_pct)
-    cash_offer = max(0, cash_gross - repairs_mid - CASH_FEE)
+    cash_offer = max(0, cash_gross - repairs - CASH_FEE)
 
     lines = [
         f"# 🏠 {address}",
-        f"*ARV: ${arv:,} · Repairs (mid): ${repairs_mid:,} · Confidence: {confidence}*",
-        f"*Roof: {roof} · HVAC: {hvac} · Condition: {condition}*",
+        f"*ARV: ${arv:,} · Repairs: ${repairs:,} · Confidence: {confidence}*",
         "",
         "---",
         "",
-        f"## 💰 CASH OFFER: **${cash_offer:,}**",
-        "```",
-        f"ARV:            ${arv:,}",
-        f"× {int(cash_pct*100)}%:          ${cash_gross:,}",
-        f"− Repairs:      −${repairs_mid:,}",
-        f"− Fee:          −${CASH_FEE:,}",
-        f"= Cash Offer:   ${cash_offer:,}",
-        "```",
     ]
 
-    if novation_eligible(roof, hvac, condition):
+    if offer_type in ("cash", "both"):
+        lines += [
+            f"## 💰 CASH OFFER: **${cash_offer:,}**",
+            "```",
+            f"ARV:            ${arv:,}",
+            f"× {int(cash_pct*100)}%:          ${cash_gross:,}",
+            f"− Repairs:      −${repairs:,}",
+            f"− Fee:          −${CASH_FEE:,}",
+            f"= Cash Offer:   ${cash_offer:,}",
+            "```",
+            "",
+        ]
+
+    if offer_type in ("novation", "both"):
         nov_pct = novation_investment_pct(market_type)
         nov_gross = int(arv * nov_pct)
         nov_offer = max(0, nov_gross - NOVATION_FEE)
         lines += [
-            "",
             f"## 📋 NOVATION OFFER: **${nov_offer:,}**",
             "```",
             f"ARV:              ${arv:,}",
             f"× {int(nov_pct*100)}%:            ${nov_gross:,}",
-            f"(No repair deduction — seller completes at close)",
+            f"(No repair deduction — seller pays at close)",
             f"= Novation Offer: ${nov_offer:,}",
             "```",
-        ]
-    else:
-        lines += [
             "",
-            "## 📋 NOVATION OFFER: **Not eligible**",
-            "> Roof or HVAC needs replacing, or property needs full rehab.",
         ]
 
-    lines += ["", "---", f"*💬 Full comp detail in thread below ↓ · Data: {data_source}*"]
+    lines += ["---", f"*💬 Full comp detail in thread below ↓ · Data: {data_source}*"]
     return "\n".join(lines)
 
 
@@ -770,12 +728,9 @@ async def run_and_post_offers(channel: discord.TextChannel):
     if not state:
         return
 
-    address   = state["address"]
-    roof      = state["roof"]
-    hvac      = state["hvac"]
-    condition = state["condition"]
-
-    score, tier = condition_to_score(roof, hvac, condition)
+    address    = state["address"]
+    repairs    = state["repairs"]        # Rep-provided repair cost
+    offer_type = state["offer_type"]     # "cash", "novation", or "both"
 
     # Fetch Rentcast data first (15s timeout)
     loop = asyncio.get_running_loop()
@@ -787,6 +742,7 @@ async def run_and_post_offers(channel: discord.TextChannel):
     except asyncio.TimeoutError:
         rentcast_raw = None
         print(f"Rentcast timed out for {address}")
+
     if rentcast_raw:
         rentcast_str = format_rentcast_data(rentcast_raw)
         data_source = "📡 Rentcast API"
@@ -796,7 +752,7 @@ async def run_and_post_offers(channel: discord.TextChannel):
 
     await channel.send(f"🔍 Running comp analysis via {data_source}...")
 
-    prompt = build_comp_prompt(address, roof, hvac, condition, rentcast_str)
+    prompt = build_comp_prompt(address, repairs, offer_type, rentcast_str)
 
     # Run Claude analysis (120s timeout)
     try:
@@ -816,17 +772,10 @@ async def run_and_post_offers(channel: discord.TextChannel):
     conf_match = re.search(r"Confidence:\s*(HIGH|MEDIUM|LOW|VERY LOW)", report)
     confidence = conf_match.group(1) if conf_match else "LOW"
 
-    # Calculate repair estimate using actual sqft from Rentcast if available
-    sqft = 1200
-    if rentcast_raw:
-        subj = rentcast_raw.get("subjectProperty", {})
-        sqft = int(subj.get("squareFootage") or 1200)
-    _, repairs_mid, _ = repair_range(score, sqft_estimate=sqft)
-
     if arv:
         offer_card = build_offer_card(
-            address, arv, repairs_mid, market_type,
-            roof, hvac, condition, confidence, data_source
+            address, arv, repairs, market_type,
+            offer_type, confidence, data_source
         )
         offer_msg = await channel.send(offer_card)
         try:
@@ -862,22 +811,17 @@ async def run_and_post_offers(channel: discord.TextChannel):
 # ── Survey Poster ─────────────────────────────────────────────────────────────
 
 async def post_survey(channel: discord.TextChannel, address: str):
-    """Post three separate survey questions. Resets channel state on each call."""
-    # Reset state — this invalidates any previous survey buttons for this channel
-    # by bumping the survey_version counter. Views check their version before firing.
-    prev_version = channel_state.get(channel.id, {}).get("survey_version", 0)
+    """Post the offer type selector. Rep picks type, then gets repair cost modal."""
     channel_state[channel.id] = {
         "address": address,
-        "roof": None,
-        "hvac": None,
-        "condition": None,
-        "survey_version": prev_version + 1,
-        "fired": False,  # prevent double-fire
+        "repairs": None,
+        "offer_type": None,
+        "fired": False,
     }
-    version = channel_state[channel.id]["survey_version"]
-    await channel.send("🏠 **1. Roof condition?**", view=RoofView(channel.id, version))
-    await channel.send("❄️ **2. HVAC condition?**", view=HvacView(channel.id, version))
-    await channel.send("🔨 **3. Overall condition?**", view=ConditionView(channel.id, version))
+    await channel.send(
+        f"🏠 **{address}**\nWhat type of offer do you want to generate?",
+        view=OfferTypeView(channel.id)
+    )
 
 
 # ── Bot Events ────────────────────────────────────────────────────────────────
