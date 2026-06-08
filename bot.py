@@ -305,6 +305,14 @@ async def slash_close(interaction: discord.Interaction):
         return
 
     await channel.edit(category=category)
+
+    # Remove from calendar if present
+    cid = str(channel.id)
+    if cid in calendar_state.get("contracts", {}):
+        del calendar_state["contracts"][cid]
+        save_json(CALENDAR_FILE, calendar_state)
+        await update_calendar_message()
+
     await interaction.response.send_message(f"🎉 Deal closed! Moved by {interaction.user.mention}")
 
 
