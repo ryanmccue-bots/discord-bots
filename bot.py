@@ -27,6 +27,7 @@ CATEGORIES = {
     "declined":  1480672102775390299,
     "contract":  1481057598026289284,
     "cold":      1480607284387250187,
+    "closed":    1513595660836929658,
 }
 
 NUDGES = {
@@ -293,6 +294,20 @@ async def move_channel(interaction: discord.Interaction, category_key: str, labe
 
 
 # ── Slash commands ───────────────────────────────────────────────────────────
+@client.tree.command(name="close", description="Move this channel to Closed Deals")
+async def slash_close(interaction: discord.Interaction):
+    guild    = interaction.guild
+    channel  = interaction.channel
+    category = guild.get_channel(CATEGORIES["closed"])
+
+    if category is None:
+        await interaction.response.send_message("❗ Closed Deals category not found.", ephemeral=True)
+        return
+
+    await channel.edit(category=category)
+    await interaction.response.send_message(f"🎉 Deal closed! Moved by {interaction.user.mention}")
+
+
 @client.tree.command(name="panel", description="Post the Lead Status panel in this channel")
 async def slash_panel(interaction: discord.Interaction):
     embed = discord.Embed(
