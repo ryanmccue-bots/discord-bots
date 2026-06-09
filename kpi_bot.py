@@ -247,9 +247,15 @@ def generate_html_report(sc_data: dict, new_leads: int, new_lead_names: list,
   .section {{ margin-bottom: 1.5rem; }}
   .section-header {{ font-size: 14px; font-weight: 600; color: #1a1a18; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 0.5px solid #dddbd3; }}
   .kpi-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; }}
-  .kpi-card {{ background: #f8f7f3; border-radius: 10px; padding: 12px 14px; }}
-  .kpi-val {{ font-size: 28px; font-weight: 600; color: #1a1a18; line-height: 1; }}
-  .kpi-label {{ font-size: 10px; font-weight: 600; color: #9e9d96; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; }}
+  .kpi-card {{ border-radius: 10px; padding: 12px 14px; border: 0.5px solid; }}
+  .kpi-val {{ font-size: 28px; font-weight: 600; line-height: 1; }}
+  .kpi-label {{ font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; }}
+  .kpi-blue    {{ background:#E6F1FB; border-color:#85B7EB; }}
+  .kpi-blue    .kpi-val {{ color:#0C447C; }} .kpi-blue .kpi-label {{ color:#185FA5; }}
+  .kpi-green   {{ background:#EAF3DE; border-color:#97C459; }}
+  .kpi-green   .kpi-val {{ color:#173404; }} .kpi-green .kpi-label {{ color:#3B6D11; }}
+  .kpi-red     {{ background:#FCEBEB; border-color:#F09595; }}
+  .kpi-red     .kpi-val {{ color:#501313; }} .kpi-red .kpi-label {{ color:#7A2020; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }}
   th {{ text-align: left; font-size: 10px; font-weight: 600; color: #9e9d96; text-transform: uppercase; letter-spacing: 0.06em; padding: 0 0 6px; }}
   td {{ padding: 5px 0; border-top: 0.5px solid #f1efe8; color: #444441; }}
@@ -258,6 +264,29 @@ def generate_html_report(sc_data: dict, new_leads: int, new_lead_names: list,
   .badge-fb {{ background:#E6F1FB; color:#0C447C; }}
   .badge-ppc {{ background:#FAEEDA; color:#633806; }}
   .sub-label {{ font-size: 11px; font-weight: 600; color: #76756e; margin: 10px 0 4px; }}
+  details {{ margin-top: 1.5rem; }}
+  details summary {{
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    color: #444441;
+    background: #f8f7f3;
+    border: 0.5px solid #dddbd3;
+    border-radius: 8px;
+    padding: 10px 14px;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    user-select: none;
+  }}
+  details summary::-webkit-details-marker {{ display: none; }}
+  details summary::after {{ content: '▶'; font-size: 10px; color: #9e9d96; transition: transform 0.2s; }}
+  details[open] summary::after {{ transform: rotate(90deg); }}
+  details summary:hover {{ background: #f1efe8; }}
+  .log-inner {{ padding: 12px 0 0; }}
+  .log-group {{ margin-bottom: 1.25rem; }}
+  .log-group-label {{ font-size: 11px; font-weight: 600; color: #9e9d96; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 6px; }}
 </style>
 </head>
 <body>
@@ -271,23 +300,16 @@ def generate_html_report(sc_data: dict, new_leads: int, new_lead_names: list,
   <div class="new-leads">{new_leads}</div>
   <div class="new-leads-label">New leads this week</div>
 
-  <table>
-    <thead><tr><th>Name</th><th>Campaign</th></tr></thead>
-    <tbody>{lead_rows(new_lead_names)}</tbody>
-  </table>
-
   <div class="divider"></div>
 
   <!-- Joy -->
   <div class="section">
     <div class="section-header">📞 Joy Zika — Lead Manager</div>
     <div class="kpi-grid">
-      <div class="kpi-card"><div class="kpi-val">{joy.get('outbound_calls',0)}</div><div class="kpi-label">Outbound Calls</div></div>
-      <div class="kpi-card"><div class="kpi-val">{joy.get('contacts',0)}</div><div class="kpi-label">Contacted</div></div>
-      <div class="kpi-card"><div class="kpi-val">{joy.get('appointments',0)}</div><div class="kpi-label">Appointments</div></div>
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{joy.get('outbound_calls',0)}</div><div class="kpi-label">Outbound Calls</div></div>
+      <div class="kpi-card kpi-green"><div class="kpi-val">{joy.get('contacts',0)}</div><div class="kpi-label">Contacted</div></div>
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{joy.get('appointments',0)}</div><div class="kpi-label">Appointments</div></div>
     </div>
-    <div class="sub-label">Appointments</div>
-    <table><tbody>{lead_rows(appts_joy)}</tbody></table>
   </div>
 
   <div class="divider"></div>
@@ -296,21 +318,13 @@ def generate_html_report(sc_data: dict, new_leads: int, new_lead_names: list,
   <div class="section">
     <div class="section-header">🏠 Carlos Oliveira</div>
     <div class="kpi-grid">
-      <div class="kpi-card"><div class="kpi-val">{carlos.get('outbound_calls',0)}</div><div class="kpi-label">Outbound Calls</div></div>
-      <div class="kpi-card"><div class="kpi-val">{carlos.get('contacts',0)}</div><div class="kpi-label">Contacted</div></div>
-      <div class="kpi-card"><div class="kpi-val">{carlos.get('appointments',0)}</div><div class="kpi-label">Appointments</div></div>
-      <div class="kpi-card"><div class="kpi-val">{carlos.get('verbal_offers',0)}</div><div class="kpi-label">Verbal Offers Made</div></div>
-      <div class="kpi-card"><div class="kpi-val">{carlos.get('contracts_accepted',0)}</div><div class="kpi-label">Contracts</div></div>
-      <div class="kpi-card"><div class="kpi-val">{carlos.get('dead',0)}</div><div class="kpi-label">Dead</div></div>
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{carlos.get('outbound_calls',0)}</div><div class="kpi-label">Outbound Calls</div></div>
+      <div class="kpi-card kpi-green"><div class="kpi-val">{carlos.get('contacts',0)}</div><div class="kpi-label">Contacted</div></div>
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{carlos.get('appointments',0)}</div><div class="kpi-label">Appointments</div></div>
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{carlos.get('verbal_offers',0)}</div><div class="kpi-label">Verbal Offers Made</div></div>
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{carlos.get('contracts_accepted',0)}</div><div class="kpi-label">Contracts</div></div>
+      <div class="kpi-card kpi-red"><div class="kpi-val">{carlos.get('dead',0)}</div><div class="kpi-label">Dead</div></div>
     </div>
-    <div class="sub-label">Appointments</div>
-    <table><tbody>{lead_rows(appts_carlos)}</tbody></table>
-    <div class="sub-label">Offers Delivered ({len(offers_carlos)})</div>
-    <table><tbody>{lead_rows(offers_carlos)}</tbody></table>
-    <div class="sub-label">Contracts ({len(contracts_carlos)})</div>
-    <table><tbody>{lead_rows(contracts_carlos)}</tbody></table>
-    <div class="sub-label">Dead ({len(dead_carlos)})</div>
-    <table><tbody>{lead_rows(dead_carlos)}</tbody></table>
   </div>
 
   <div class="divider"></div>
@@ -319,19 +333,66 @@ def generate_html_report(sc_data: dict, new_leads: int, new_lead_names: list,
   <div class="section">
     <div class="section-header">⚡ Trevor Anderson</div>
     <div class="kpi-grid">
-      <div class="kpi-card"><div class="kpi-val">{trevor.get('outbound_calls',0)}</div><div class="kpi-label">Outbound Calls</div></div>
-      <div class="kpi-card"><div class="kpi-val">{trevor.get('contacts',0)}</div><div class="kpi-label">Contacted</div></div>
-      <div class="kpi-card"><div class="kpi-val">{trevor.get('verbal_offers',0)}</div><div class="kpi-label">Verbal Offers Made</div></div>
-      <div class="kpi-card"><div class="kpi-val">{trevor.get('contracts_accepted',0)}</div><div class="kpi-label">Contracts</div></div>
-      <div class="kpi-card"><div class="kpi-val">{trevor.get('dead',0)}</div><div class="kpi-label">Dead</div></div>
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{trevor.get('outbound_calls',0)}</div><div class="kpi-label">Outbound Calls</div></div>
+      <div class="kpi-card kpi-green"><div class="kpi-val">{trevor.get('contacts',0)}</div><div class="kpi-label">Contacted</div></div>
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{trevor.get('verbal_offers',0)}</div><div class="kpi-label">Verbal Offers Made</div></div>
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{trevor.get('contracts_accepted',0)}</div><div class="kpi-label">Contracts</div></div>
+      <div class="kpi-card kpi-red"><div class="kpi-val">{trevor.get('dead',0)}</div><div class="kpi-label">Dead</div></div>
     </div>
-    <div class="sub-label">Offers Delivered ({len(offers_trevor)})</div>
-    <table><tbody>{lead_rows(offers_trevor)}</tbody></table>
-    <div class="sub-label">Contracts ({len(contracts_trevor)})</div>
-    <table><tbody>{lead_rows(contracts_trevor)}</tbody></table>
-    <div class="sub-label">Dead ({len(dead_trevor)})</div>
-    <table><tbody>{lead_rows(dead_trevor)}</tbody></table>
   </div>
+
+  <!-- Collapsible lead log -->
+  <details>
+    <summary>📋 Full Lead Log — {date_label}</summary>
+    <div class="log-inner">
+
+      <div class="log-group">
+        <div class="log-group-label">🏠 New Leads This Week ({new_leads})</div>
+        <table><tbody>{lead_rows(new_lead_names)}</tbody></table>
+      </div>
+
+      <div class="log-group">
+        <div class="log-group-label">📞 Joy — Appointments ({len(appts_joy)})</div>
+        <table><tbody>{lead_rows(appts_joy)}</tbody></table>
+      </div>
+
+      <div class="log-group">
+        <div class="log-group-label">🏠 Carlos — Appointments ({len(appts_carlos)})</div>
+        <table><tbody>{lead_rows(appts_carlos)}</tbody></table>
+      </div>
+
+      <div class="log-group">
+        <div class="log-group-label">🏠 Carlos — Offers Delivered ({len(offers_carlos)})</div>
+        <table><tbody>{lead_rows(offers_carlos)}</tbody></table>
+      </div>
+
+      <div class="log-group">
+        <div class="log-group-label">🏠 Carlos — Contracts ({len(contracts_carlos)})</div>
+        <table><tbody>{lead_rows(contracts_carlos)}</tbody></table>
+      </div>
+
+      <div class="log-group">
+        <div class="log-group-label">🏠 Carlos — Dead ({len(dead_carlos)})</div>
+        <table><tbody>{lead_rows(dead_carlos)}</tbody></table>
+      </div>
+
+      <div class="log-group">
+        <div class="log-group-label">⚡ Trevor — Offers Delivered ({len(offers_trevor)})</div>
+        <table><tbody>{lead_rows(offers_trevor)}</tbody></table>
+      </div>
+
+      <div class="log-group">
+        <div class="log-group-label">⚡ Trevor — Contracts ({len(contracts_trevor)})</div>
+        <table><tbody>{lead_rows(contracts_trevor)}</tbody></table>
+      </div>
+
+      <div class="log-group">
+        <div class="log-group-label">⚡ Trevor — Dead ({len(dead_trevor)})</div>
+        <table><tbody>{lead_rows(dead_trevor)}</tbody></table>
+      </div>
+
+    </div>
+  </details>
 
 </div>
 </body>
