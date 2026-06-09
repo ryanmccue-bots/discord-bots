@@ -272,12 +272,6 @@ async def move_channel(interaction: discord.Interaction, category_key: str, labe
     await interaction.response.send_message(f"✅ Moved to **{label}** by {interaction.user.mention}")
 
     if cat_id == CATEGORIES["contract"]:
-        member_ids = [m.id for m in channel.members]
-        if EXEMPT_USER_ID not in member_ids:
-            dispo_role = guild.get_role(DISPO_ROLE_ID)
-            if dispo_role:
-                await channel.set_permissions(dispo_role, overwrite=DISPO_PERMISSIONS)
-
         cal_embed = discord.Embed(
             title="Calendar Manager",
             description="Enter the signed and closing dates for this contract:",
