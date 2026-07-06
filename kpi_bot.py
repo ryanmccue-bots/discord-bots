@@ -245,9 +245,16 @@ def generate_html_report(sc_data: dict, new_leads: int, new_lead_names: list,
     joy    = sc_data.get("Joy Zika", {})
     carlos = sc_data.get("Carlos Oliveira", {})
     trevor = sc_data.get("Trevor Anderson", {})
+    joe    = sc_data.get("Joe Monteverde", {})
+
+    contacted    = int((crm["Contacted Type"] == "contacted").sum())
+    contact_rate = f"{round(contacted / new_leads * 100)}%" if new_leads else "0%"
+    carlos_claimed = int((crm["Owner"] == "carlos@favoritehomebuyer.com").sum())
+    trevor_claimed = int((crm["Owner"] == "tdarealestate@gmail.com").sum())
 
     appts_joy     = get_appointment_names(crm, "Joy Zika")
     appts_carlos  = get_appointment_names(crm, "Carlos Oliveira")
+    appts_trevor  = get_appointment_names(crm, "Trevor Anderson")
     offers_carlos = get_offer_names(crm, "Carlos Oliveira")
     offers_trevor = get_offer_names(crm, "Trevor Anderson")
     contracts_carlos = get_contract_names(crm, "Carlos Oliveira")
@@ -270,8 +277,6 @@ def generate_html_report(sc_data: dict, new_leads: int, new_lead_names: list,
   .sub {{ font-size: 13px; color: #76756e; }}
   .period {{ display: inline-block; font-size: 12px; background: #f1efe8; border: 0.5px solid #d3d1c7; border-radius: 20px; padding: 3px 14px; color: #76756e; margin-top: 8px; }}
   .header {{ text-align: center; margin-bottom: 2rem; }}
-  .new-leads {{ text-align: center; font-size: 48px; font-weight: 600; color: #1a1a18; margin: 1rem 0 0.25rem; }}
-  .new-leads-label {{ text-align: center; font-size: 13px; color: #76756e; margin-bottom: 1.5rem; }}
   .divider {{ border-top: 0.5px solid #dddbd3; margin: 1.5rem 0; }}
   .section {{ margin-bottom: 1.5rem; }}
   .section-header {{ font-size: 14px; font-weight: 600; color: #1a1a18; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 0.5px solid #dddbd3; }}
@@ -285,6 +290,8 @@ def generate_html_report(sc_data: dict, new_leads: int, new_lead_names: list,
   .kpi-green   .kpi-val {{ color:#173404; }} .kpi-green .kpi-label {{ color:#3B6D11; }}
   .kpi-red     {{ background:#FCEBEB; border-color:#F09595; }}
   .kpi-red     .kpi-val {{ color:#501313; }} .kpi-red .kpi-label {{ color:#7A2020; }}
+  .kpi-purple  {{ background:#F0EBFB; border-color:#B39DDB; }}
+  .kpi-purple  .kpi-val {{ color:#3B1A7A; }} .kpi-purple .kpi-label {{ color:#5E35B1; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }}
   th {{ text-align: left; font-size: 10px; font-weight: 600; color: #9e9d96; text-transform: uppercase; letter-spacing: 0.06em; padding: 0 0 6px; }}
   td {{ padding: 5px 0; border-top: 0.5px solid #f1efe8; color: #444441; }}
@@ -326,14 +333,21 @@ def generate_html_report(sc_data: dict, new_leads: int, new_lead_names: list,
     <div class="period">{date_label}</div>
   </div>
 
-  <div class="new-leads">{new_leads}</div>
-  <div class="new-leads-label">New leads this week</div>
+  <!-- Overall -->
+  <div class="section">
+    <div class="section-header">📋 OVERALL</div>
+    <div class="kpi-grid">
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{new_leads}</div><div class="kpi-label">New Leads</div></div>
+      <div class="kpi-card kpi-green"><div class="kpi-val">{contacted}</div><div class="kpi-label">Contacted</div></div>
+      <div class="kpi-card kpi-purple"><div class="kpi-val">{contact_rate}</div><div class="kpi-label">Contact Rate</div></div>
+    </div>
+  </div>
 
   <div class="divider"></div>
 
   <!-- Joy -->
   <div class="section">
-    <div class="section-header">📞 Joy Zika — Lead Manager</div>
+    <div class="section-header">💬 Joy Zika — Lead Manager</div>
     <div class="kpi-grid">
       <div class="kpi-card kpi-blue"><div class="kpi-val">{joy.get('outbound_calls',0)}</div><div class="kpi-label">Outbound Calls</div></div>
       <div class="kpi-card kpi-green"><div class="kpi-val">{joy.get('contacts',0)}</div><div class="kpi-label">Contacted</div></div>
@@ -347,10 +361,11 @@ def generate_html_report(sc_data: dict, new_leads: int, new_lead_names: list,
   <div class="section">
     <div class="section-header">🏠 Carlos Oliveira</div>
     <div class="kpi-grid">
+      <div class="kpi-card kpi-purple"><div class="kpi-val">{carlos_claimed}</div><div class="kpi-label">Claimed Opps</div></div>
       <div class="kpi-card kpi-blue"><div class="kpi-val">{carlos.get('outbound_calls',0)}</div><div class="kpi-label">Outbound Calls</div></div>
       <div class="kpi-card kpi-green"><div class="kpi-val">{carlos.get('contacts',0)}</div><div class="kpi-label">Contacted</div></div>
       <div class="kpi-card kpi-blue"><div class="kpi-val">{carlos.get('appointments',0)}</div><div class="kpi-label">Appointments</div></div>
-      <div class="kpi-card kpi-blue"><div class="kpi-val">{carlos.get('verbal_offers',0)}</div><div class="kpi-label">Verbal Offers Made</div></div>
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{carlos.get('verbal_offers',0)}</div><div class="kpi-label">Verbal Offers</div></div>
       <div class="kpi-card kpi-blue"><div class="kpi-val">{carlos.get('contracts_accepted',0)}</div><div class="kpi-label">Contracts</div></div>
       <div class="kpi-card kpi-red"><div class="kpi-val">{carlos.get('dead',0)}</div><div class="kpi-label">Dead</div></div>
     </div>
@@ -362,11 +377,25 @@ def generate_html_report(sc_data: dict, new_leads: int, new_lead_names: list,
   <div class="section">
     <div class="section-header">⚡ Trevor Anderson</div>
     <div class="kpi-grid">
+      <div class="kpi-card kpi-purple"><div class="kpi-val">{trevor_claimed}</div><div class="kpi-label">Claimed Opps</div></div>
       <div class="kpi-card kpi-blue"><div class="kpi-val">{trevor.get('outbound_calls',0)}</div><div class="kpi-label">Outbound Calls</div></div>
       <div class="kpi-card kpi-green"><div class="kpi-val">{trevor.get('contacts',0)}</div><div class="kpi-label">Contacted</div></div>
-      <div class="kpi-card kpi-blue"><div class="kpi-val">{trevor.get('verbal_offers',0)}</div><div class="kpi-label">Verbal Offers Made</div></div>
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{trevor.get('appointments',0)}</div><div class="kpi-label">Appointments</div></div>
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{trevor.get('verbal_offers',0)}</div><div class="kpi-label">Verbal Offers</div></div>
       <div class="kpi-card kpi-blue"><div class="kpi-val">{trevor.get('contracts_accepted',0)}</div><div class="kpi-label">Contracts</div></div>
       <div class="kpi-card kpi-red"><div class="kpi-val">{trevor.get('dead',0)}</div><div class="kpi-label">Dead</div></div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Joe -->
+  <div class="section">
+    <div class="section-header">💬 Joe Monteverde — VA</div>
+    <div class="kpi-grid">
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{joe.get('outbound_calls',0)}</div><div class="kpi-label">Outbound Calls</div></div>
+      <div class="kpi-card kpi-green"><div class="kpi-val">{joe.get('contacts',0)}</div><div class="kpi-label">Contacted</div></div>
+      <div class="kpi-card kpi-blue"><div class="kpi-val">{joe.get('appointments',0)}</div><div class="kpi-label">Appointments</div></div>
     </div>
   </div>
 
@@ -381,7 +410,7 @@ def generate_html_report(sc_data: dict, new_leads: int, new_lead_names: list,
       </div>
 
       <div class="log-group">
-        <div class="log-group-label">📞 Joy — Appointments ({len(appts_joy)})</div>
+        <div class="log-group-label">💬 Joy — Appointments ({len(appts_joy)})</div>
         <table><tbody>{lead_rows(appts_joy)}</tbody></table>
       </div>
 
@@ -403,6 +432,11 @@ def generate_html_report(sc_data: dict, new_leads: int, new_lead_names: list,
       <div class="log-group">
         <div class="log-group-label">🏠 Carlos — Dead ({len(dead_carlos)})</div>
         <table><tbody>{lead_rows(dead_carlos)}</tbody></table>
+      </div>
+
+      <div class="log-group">
+        <div class="log-group-label">⚡ Trevor — Appointments ({len(appts_trevor)})</div>
+        <table><tbody>{lead_rows(appts_trevor)}</tbody></table>
       </div>
 
       <div class="log-group">
