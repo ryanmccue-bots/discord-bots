@@ -123,12 +123,24 @@ def build_embeds(sc_data: dict, new_leads: int, new_lead_names: list,
     """Build the list of Discord embeds for the KPI report."""
     embeds = []
 
+    # ── Compute overall stats ─────────────────────────────────────────────
+    contacted = int((crm["Contacted Type"] == "contacted").sum())
+    contact_rate = f"{round(contacted / new_leads * 100)}%" if new_leads else "0%"
+
     # ── Main summary embed ────────────────────────────────────────────────
     summary = discord.Embed(
         title=f"📊 Weekly KPI Report — {date_label}",
         color=0x2ECC71
     )
-    summary.add_field(name="🏠 New Leads This Week", value=str(new_leads), inline=False)
+    summary.add_field(
+        name="📋 OVERALL",
+        value=(
+            f"New Leads This Week: **{new_leads}**\n"
+            f"Contacted: **{contacted}**\n"
+            f"Contact Rate: **{contact_rate}**"
+        ),
+        inline=False
+    )
     summary.add_field(name="\u200b", value="─" * 40, inline=False)
 
     # Joy
