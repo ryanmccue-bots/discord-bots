@@ -49,16 +49,11 @@ def parse_scorecard(sc: pd.DataFrame) -> dict:
     return result
 
 def count_new_leads(crm: pd.DataFrame, start: datetime, end: datetime) -> int:
-    crm["date_created"] = pd.to_datetime(crm["Date Created"], errors="coerce")
-    mask = (crm["date_created"] >= start) & (crm["date_created"] <= end)
-    return int(mask.sum())
+    return len(crm)
 
 def get_new_lead_names(crm: pd.DataFrame, start: datetime, end: datetime) -> list:
-    crm["date_created"] = pd.to_datetime(crm["Date Created"], errors="coerce")
-    mask = (crm["date_created"] >= start) & (crm["date_created"] <= end)
-    rows = crm[mask]
     names = []
-    for _, r in rows.iterrows():
+    for _, r in crm.iterrows():
         fn = str(r.get("Seller First Name", "")).strip()
         ln = str(r.get("Seller Last Name", "")).strip()
         campaign = str(r.get("Campaign", "")).strip()
