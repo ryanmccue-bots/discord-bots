@@ -143,6 +143,10 @@ def build_embeds(sc_data: dict, new_leads: int, new_lead_names: list,
     )
     summary.add_field(name="\u200b", value="─" * 40, inline=False)
 
+    # ── Compute claimed opps ──────────────────────────────────────────────
+    carlos_claimed = int((crm["Owner"] == "carlos@favoritehomebuyer.com").sum())
+    trevor_claimed = int((crm["Owner"] == "tdarealestate@gmail.com").sum())
+
     # Joy
     joy = sc_data.get("Joy Zika", {})
     summary.add_field(
@@ -161,6 +165,7 @@ def build_embeds(sc_data: dict, new_leads: int, new_lead_names: list,
     summary.add_field(
         name="🏠 Carlos Oliveira",
         value=(
+            f"Claimed Opps: **{carlos_claimed}**\n"
             f"Outbound calls: **{carlos.get('outbound_calls', 0)}**\n"
             f"Contacted: **{carlos.get('contacts', 0)}**\n"
             f"Appointments set: **{carlos.get('appointments', 0)}**\n"
@@ -177,11 +182,25 @@ def build_embeds(sc_data: dict, new_leads: int, new_lead_names: list,
     summary.add_field(
         name="⚡ Trevor Anderson",
         value=(
+            f"Claimed Opps: **{trevor_claimed}**\n"
             f"Outbound calls: **{trevor.get('outbound_calls', 0)}**\n"
             f"Contacted: **{trevor.get('contacts', 0)}**\n"
             f"Verbal offers made: **{trevor.get('verbal_offers', 0)}**\n"
             f"Contracts accepted: **{trevor.get('contracts_accepted', 0)}**\n"
             f"Dead opportunities: **{trevor.get('dead', 0)}**"
+        ),
+        inline=False
+    )
+    summary.add_field(name="\u200b", value="─" * 40, inline=False)
+
+    # Joe Monteverde
+    joe = sc_data.get("Joe Monteverde", {})
+    summary.add_field(
+        name="📞 Joe Monteverde — VA",
+        value=(
+            f"Outbound calls: **{joe.get('outbound_calls', 0)}**\n"
+            f"Contacted: **{joe.get('contacts', 0)}**\n"
+            f"Appointments set: **{joe.get('appointments', 0)}**"
         ),
         inline=False
     )
