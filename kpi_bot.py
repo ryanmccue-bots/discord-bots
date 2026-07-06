@@ -130,6 +130,7 @@ def build_embeds(sc_data: dict, new_leads: int, new_lead_names: list,
     # ── Main summary embed ────────────────────────────────────────────────
     summary = discord.Embed(
         title=f"📊 Weekly KPI Report — {date_label}",
+        description="\u200b",
         color=0x2ECC71
     )
     summary.add_field(
@@ -185,6 +186,7 @@ def build_embeds(sc_data: dict, new_leads: int, new_lead_names: list,
             f"Claimed Opps: **{trevor_claimed}**\n"
             f"Outbound calls: **{trevor.get('outbound_calls', 0)}**\n"
             f"Contacted: **{trevor.get('contacts', 0)}**\n"
+            f"Appointments set: **{trevor.get('appointments', 0)}**\n"
             f"Verbal offers made: **{trevor.get('verbal_offers', 0)}**\n"
             f"Contracts accepted: **{trevor.get('contracts_accepted', 0)}**\n"
             f"Dead opportunities: **{trevor.get('dead', 0)}**"
@@ -206,7 +208,6 @@ def build_embeds(sc_data: dict, new_leads: int, new_lead_names: list,
     )
 
     summary.add_field(name="\u200b", value="─" * 40, inline=False)
-    summary.add_field(name="\u200b", value="\u200b", inline=False)
     summary.add_field(
         name="📄 Full Report",
         value="See attached HTML file — download and open in browser for full lead log.",
