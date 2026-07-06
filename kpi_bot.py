@@ -150,7 +150,7 @@ def build_embeds(sc_data: dict, new_leads: int, new_lead_names: list,
     # Joy
     joy = sc_data.get("Joy Zika", {})
     summary.add_field(
-        name="📞 Joy Zika — Lead Manager",
+        name="💬 Joy Zika — Lead Manager",
         value=(
             f"Outbound calls: **{joy.get('outbound_calls', 0)}**\n"
             f"Contacted: **{joy.get('contacts', 0)}**\n"
@@ -196,7 +196,7 @@ def build_embeds(sc_data: dict, new_leads: int, new_lead_names: list,
     # Joe Monteverde
     joe = sc_data.get("Joe Monteverde", {})
     summary.add_field(
-        name="📞 Joe Monteverde — VA",
+        name="💬 Joe Monteverde — VA",
         value=(
             f"Outbound calls: **{joe.get('outbound_calls', 0)}**\n"
             f"Contacted: **{joe.get('contacts', 0)}**\n"
@@ -205,6 +205,8 @@ def build_embeds(sc_data: dict, new_leads: int, new_lead_names: list,
         inline=False
     )
 
+    summary.add_field(name="\u200b", value="─" * 40, inline=False)
+    summary.add_field(name="\u200b", value="\u200b", inline=False)
     summary.add_field(
         name="📄 Full Report",
         value="See attached HTML file — download and open in browser for full lead log.",
