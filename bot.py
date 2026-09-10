@@ -42,6 +42,18 @@ NUDGE_INTERVAL_HOURS = 24
 STATE_FILE    = "channel_state.json"
 CALENDAR_FILE = "calendar_state.json"
 
+FARAH_USER_ID  = 1186039817713234123
+CARLOS_USER_ID = 1089701097867853865
+
+FARAH_PERMISSIONS = discord.PermissionOverwrite(
+    view_channel=True,
+    send_messages=True,
+    embed_links=True,
+    attach_files=True,
+    add_reactions=True,
+    read_message_history=True,
+)
+
 DISPO_PERMISSIONS = discord.PermissionOverwrite(
     view_channel=True,
     send_messages=True,
@@ -271,6 +283,14 @@ async def move_channel(interaction: discord.Interaction, category_key: str, labe
     await channel.edit(category=category)
     await interaction.response.send_message(f"✅ Moved to **{label}** by {interaction.user.mention}")
 
+    # If moved to Offer Delivered or Declined and Carlos is a member, add Farah
+    if cat_id in (CATEGORIES["delivered"], CATEGORIES["declined"]):
+        member_ids = [m.id for m in channel.members]
+        if CARLOS_USER_ID in member_ids:
+            farah = guild.get_member(FARAH_USER_ID)
+            if farah:
+                await channel.set_permissions(farah, overwrite=FARAH_PERMISSIONS)
+
     if cat_id == CATEGORIES["contract"]:
         cal_embed = discord.Embed(
             title="Calendar Manager",
@@ -288,6 +308,32 @@ async def move_channel(interaction: discord.Interaction, category_key: str, labe
 
 
 # ── Slash commands ───────────────────────────────────────────────────────────
+@client.tree.command(name="addfarah", description="Grant Farah access to all Carlos Offer Delivered/Declined channels")
+async def slash_addfarah(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    guild = interaction.guild
+    farah = guild.get_member(FARAH_USER_ID)
+    if not farah:
+        await interaction.followup.send("❗ Couldn't find Farah in the server.", ephemeral=True)
+        return
+
+    target_categories = (CATEGORIES["delivered"], CATEGORIES["declined"])
+    added = 0
+
+    for cat_id in target_categories:
+        category = guild.get_channel(cat_id)
+        if category is None:
+            continue
+        for channel in category.text_channels:
+            member_ids = [m.id for m in channel.members]
+            if CARLOS_USER_ID in member_ids:
+                await channel.set_permissions(farah, overwrite=FARAH_PERMISSIONS)
+                added += 1
+
+    await interaction.followup.send(f"✅ Added Farah to **{added}** channels.", ephemeral=True)
+
+
 @client.tree.command(name="close", description="Move this channel to Closed Deals")
 async def slash_close(interaction: discord.Interaction):
     guild    = interaction.guild
