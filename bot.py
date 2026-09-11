@@ -6,6 +6,7 @@ import os
 import json
 import time
 import re
+import aiohttp
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
@@ -353,7 +354,10 @@ async def slash_close(interaction: discord.Interaction):
         save_json(CALENDAR_FILE, calendar_state)
         await update_calendar_message()
 
-    await interaction.response.send_message(f"🎉 Deal closed! Moved by {interaction.user.mention}")
+    await interaction.response.send_message(
+        f"🎉 Deal closed! Moved by {interaction.user.mention}\n"
+        "Fill in the **Log Closed Deal** form below so it reaches the Revenue tab."
+    )
 
 
 @client.tree.command(name="panel", description="Post the Lead Status panel in this channel")
@@ -467,6 +471,264 @@ async def slash_recovercalendar(interaction: discord.Interaction):
     )
 
 
+# ── Closed-deal reporting ────────────────────────────────────────────────────
+# When a channel lands in Closed Deals, a form collects what the deal was worth
+# and who gets paid, and posts it to the KPI dashboard. See DEAL_WEBHOOK.md.
+#
+# A Discord modal allows five fields and this needs six things: address, fee,
+# acquisition agent(s), disposition agent, lead manager, and - when back-
+# filling an old channel - the date it closed. So the date is a slash-command
+# argument rather than a modal field, and the agent fields take "Name: amount"
+# a line at a time. That also solves splits: two acquisition agents are two
+# lines, not a second form.
+
+KPI_BASE_URL = os.environ.get(
+    "KPI_BASE_URL", "https://favoritehomebuyerkpi.up.railway.app").rstrip("/")
+DEAL_WEBHOOK_TOKEN = os.environ.get("DEAL_WEBHOOK_TOKEN", "")
+
+# "Carlos: 2000", "Carlos - 2,000", "Carlos $2000" - one person per line.
+PERSON_LINE = re.compile(r"^\s*(.+?)\s*[:\-–]?\s*\$?\s*([\d,]+(?:\.\d{1,2})?)\s*$")
+
+
+def parse_money_text(raw):
+    """A typed amount to a number, or None if it is not one."""
+    if raw is None:
+        return None
+    text = str(raw).strip().lstrip("$").replace(",", "").strip()
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def parse_people_lines(raw, amount_key):
+    """``"Carlos: 2000\\nTrevor: 1800"`` to payload entries.
+
+    Returns ``(entries, bad_lines)``. A line that cannot be read is reported
+    rather than skipped - a silently dropped line is a silently unpaid person.
+    """
+    entries, bad = [], []
+    for line in (raw or "").splitlines():
+        if not line.strip():
+            continue
+        match = PERSON_LINE.match(line)
+        if not match:
+            bad.append(line.strip())
+            continue
+        name = match.group(1).strip().rstrip(":-–").strip()
+        amount = parse_money_text(match.group(2))
+        if not name or amount is None:
+            bad.append(line.strip())
+            continue
+        entries.append({"person": name, amount_key: amount})
+    return entries, bad
+
+
+def guess_address(channel):
+    """A starting point for the address field, for a human to correct.
+
+    Channel names are slugs - "1234-briarwood-drive" - so this un-slugs one
+    into something recognisable. It is deliberately only a prefill: guessing
+    an address wrong and storing it silently is worse than asking.
+    """
+    name = (channel.name or "").replace("-", " ").replace("_", " ").strip()
+    return " ".join(word.capitalize() if word.islower() else word
+                    for word in name.split())[:250]
+
+
+async def post_deal(payload):
+    """Send one deal to the dashboard. Returns ``(ok, detail)``."""
+    if not DEAL_WEBHOOK_TOKEN:
+        return False, ("DEAL_WEBHOOK_TOKEN is not set on this bot, so there is "
+                       "nowhere to send the deal.")
+    url = f"{KPI_BASE_URL}/hooks/deal/{DEAL_WEBHOOK_TOKEN}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload,
+                                    timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                body = await resp.text()
+                if resp.status == 200:
+                    try:
+                        return True, json.loads(body)
+                    except ValueError:
+                        return True, {}
+                if resp.status == 404:
+                    return False, ("The dashboard did not recognise the webhook "
+                                   "token, or the Revenue build is not deployed "
+                                   "yet.")
+                try:
+                    return False, json.loads(body).get("error", body[:300])
+                except ValueError:
+                    return False, body[:300]
+    except Exception as exc:  # noqa: BLE001 - never crash the bot over a deal
+        return False, f"Could not reach the dashboard: {exc}"
+
+
+class ClosedDealModal(Modal, title="Closed Deal"):
+    address = TextInput(label="Property address", max_length=250)
+    fee = TextInput(label="Assignment fee (what the company made)",
+                    placeholder="18500", max_length=20)
+    acquisitions = TextInput(
+        label="Acquisition agent(s) — one per line",
+        style=discord.TextStyle.paragraph, required=False,
+        placeholder="Carlos: 2000\nTrevor: 1800   ← two lines for a split deal",
+        max_length=400)
+    disposition = TextInput(label="Disposition agent", required=False,
+                            placeholder="Marcus: 1500", max_length=120)
+    lead_manager = TextInput(label="Lead manager bonus", required=False,
+                             placeholder="Joy: 500", max_length=120)
+
+    def __init__(self, channel, closed_on=None):
+        super().__init__()
+        self.channel_id = str(channel.id)
+        self.channel_name = channel.name
+        self.closed_on = closed_on
+        self.address.default = guess_address(channel)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        fee = parse_money_text(self.fee.value)
+        if fee is None:
+            await interaction.followup.send(
+                f"❗ I could not read the assignment fee: `{self.fee.value}`. "
+                "Enter it as a number, like `18500`.", ephemeral=True)
+            return
+
+        acq, bad_acq = parse_people_lines(self.acquisitions.value, "commission")
+        dispo, bad_dispo = parse_people_lines(self.disposition.value, "commission")
+        lead, bad_lead = parse_people_lines(self.lead_manager.value, "bonus")
+        bad = bad_acq + bad_dispo + bad_lead
+        if bad:
+            await interaction.followup.send(
+                "❗ I could not read these lines:\n"
+                + "\n".join(f"• `{line}`" for line in bad)
+                + "\n\nUse `Name: amount`, one per line — for example "
+                  "`Carlos: 2000`.", ephemeral=True)
+            return
+
+        payload = {
+            "deal_id": self.channel_id,
+            "address": self.address.value.strip(),
+            "assignment_fee": fee,
+            "acquisitions": acq,
+            "channel_name": self.channel_name,
+            "recorded_by": str(interaction.user),
+        }
+        if dispo:
+            payload["disposition"] = dispo[0]
+        if lead:
+            payload["lead_manager"] = lead[0]
+        if self.closed_on:
+            payload["closed_on"] = self.closed_on
+
+        ok, detail = await post_deal(payload)
+        if not ok:
+            await interaction.followup.send(f"❗ The dashboard refused it: {detail}")
+            return
+
+        paid = sum(e["commission"] for e in acq) \
+            + sum(e["commission"] for e in dispo) \
+            + sum(e["bonus"] for e in lead)
+        again = "" if detail.get("created", True) else " *(updated the existing record)*"
+        lines = [
+            f"💰 **Deal logged**{again}",
+            f"**{payload['address']}** — fee **${fee:,.0f}**, "
+            f"**${paid:,.0f}** paid out",
+        ]
+        for entry in acq:
+            lines.append(f"• Acquisitions — {entry['person']}: ${entry['commission']:,.0f}")
+        for entry in dispo:
+            lines.append(f"• Dispositions — {entry['person']}: ${entry['commission']:,.0f}")
+        for entry in lead:
+            lines.append(f"• Lead manager — {entry['person']}: ${entry['bonus']:,.0f}")
+        # Names the dashboard could not place. Worth saying out loud now, while
+        # somebody still remembers the deal - an unattributed payout that is
+        # never mentioned is one nobody fixes.
+        unresolved = (detail or {}).get("unresolved") or []
+        if unresolved:
+            lines.append("")
+            lines.append("⚠️ The dashboard did not recognise: "
+                         + ", ".join(f"**{name}**" for name in unresolved)
+                         + ". Their payout is recorded but not attributed to "
+                           "anyone — re-run `/logdeal` with the spelling the "
+                           "dashboard uses.")
+        await interaction.followup.send("\n".join(lines))
+
+
+class ClosedDealView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="💰 Log Closed Deal", style=discord.ButtonStyle.success,
+                       custom_id="log_closed_deal")
+    async def log_deal(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(ClosedDealModal(interaction.channel))
+
+
+async def post_closed_deal_form(channel):
+    """Post the form once per channel, and remember that it was posted."""
+    state = channel_state.setdefault(str(channel.id), {})
+    if state.get("deal_form_posted"):
+        return
+    embed = discord.Embed(
+        title="Closed Deal",
+        description=("Log what this deal was worth so it lands on the Revenue "
+                     "tab.\n\nFor a split, put each acquisition agent on their "
+                     "own line."),
+        color=0x2ECC71,
+    )
+    await channel.send(embed=embed, view=ClosedDealView())
+    state["deal_form_posted"] = True
+    save_json(STATE_FILE, channel_state)
+
+
+@client.tree.command(name="logdeal",
+                     description="Log this closed deal on the Revenue dashboard")
+@app_commands.describe(
+    closed_on="Only for old deals — the date it closed, MM/DD/YYYY. "
+              "Leave blank for today.")
+async def slash_logdeal(interaction: discord.Interaction, closed_on: str = ""):
+    """The back-fill command, and a way to correct a deal already sent.
+
+    Re-running it on a channel that was already logged corrects the record
+    rather than double-counting: the dashboard keys deals on the channel id.
+    """
+    when = ""
+    if closed_on.strip():
+        parsed = parse_date(closed_on)
+        if parsed is None:
+            await interaction.response.send_message(
+                "❗ I could not read that date. Use MM/DD/YYYY.", ephemeral=True)
+            return
+        when = parsed.isoformat()
+    await interaction.response.send_modal(
+        ClosedDealModal(interaction.channel, closed_on=when))
+
+
+@client.event
+async def on_guild_channel_update(before, after):
+    """Catch a channel dragged into Closed Deals, not just /close.
+
+    People move channels by dragging them in the sidebar as often as by using
+    the command, and a form that only appears one of those ways is a form that
+    quietly misses deals.
+    """
+    if not isinstance(after, discord.TextChannel):
+        return
+    if before.category_id == after.category_id:
+        return
+    if after.category_id != CATEGORIES["closed"]:
+        return
+    try:
+        await post_closed_deal_form(after)
+    except Exception as exc:  # noqa: BLE001 - a failed form must not crash the bot
+        print(f"could not post the closed-deal form in {after.name}: {exc}")
+
+
 # ── Background tasks ─────────────────────────────────────────────────────────
 @tasks.loop(hours=1)
 async def nudge_check():
@@ -530,6 +792,7 @@ async def on_ready():
     client.add_view(LeadStatusView())
     client.add_view(ReminderSettingsView())
     client.add_view(CalendarManagerViewPersistent())
+    client.add_view(ClosedDealView())
     nudge_check.start()
     refresh_calendar.start()
     print(f"✅ Logged in as {client.user}")
