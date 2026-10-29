@@ -1,0 +1,1541 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>FHB — Ads</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="wrap wrap-wide">
+  <header class="top">
+    <h1><a href="/">Favorite Home Buyer</a></h1>
+    <div class="top-meta">
+      <span id="freshness"><span class="dot stale"></span>Ads</span>
+      <button class="refresh" id="refresh" type="button"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 7.5A6.5 6.5 0 1 0 14 12"/><path d="M15.5 3.5v4h-4"/></svg><span class="refresh-label">Refresh</span></button>
+      <a class="plain" href="/logout">Sign out</a>
+    </div>
+  </header>
+
+  <nav class="views">
+    <a href="/">Overview</a>
+    <a href="/opportunities">Opportunities</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/rep">Rep Drill-Down</a>
+    <a href="/revenue">Revenue</a>
+    <a href="/trends">Trends</a>
+    <a href="/ads" aria-current="page">Ads</a>
+    <a href="/staff">Staff</a>
+  </nav>
+
+  <!-- Ad spend is behind the PIN. The gate is a courtesy; every /api/ads,
+       /api/google and /api/meta route refuses without the cookie. -->
+  <div class="gate" id="gate" hidden>
+    <form class="gate-card" id="gate-form" autocomplete="off">
+      <div class="gate-lock" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round">
+          <rect x="4.5" y="10.5" width="15" height="10" rx="2"/>
+          <path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15.5" r="1.2"/>
+        </svg>
+      </div>
+      <h2>Ad spend is behind a PIN</h2>
+      <p class="hint">Four digits. Unlocked for 12 hours on this device.</p>
+      <input id="pin" type="password" inputmode="numeric" pattern="[0-9]*"
+             autocomplete="off" aria-label="PIN" placeholder="••••" class="pin-field">
+      <button class="primary" type="submit" id="pin-go">Unlock</button>
+      <div class="gate-err" id="pin-err" role="alert"></div>
+    </form>
+  </div>
+
+  <div id="locked-note" class="card" hidden>
+    <h2>The Ads tab needs a PIN</h2>
+    <p class="hint">Set <code>META_PIN</code> (four digits) in Railway. It guards ad spend
+      and Staff changes.</p>
+  </div>
+
+  <div id="live" hidden>
+    <div class="filters" role="group" aria-label="Date range">
+      <div class="seg" id="presets">
+        <button data-preset="today">Today</button>
+        <button data-preset="thisweek">This week</button>
+        <button data-preset="lastweek">Last week</button>
+        <button data-preset="mtd">Month to date</button>
+        <button data-preset="lastmonth">Last month</button>
+        <button data-preset="30">30 days</button>
+        <button data-preset="90">90 days</button>
+      </div>
+      <select id="month" class="month-pick" aria-label="Whole month"><option value="">Month…</option></select>
+      <input type="date" id="from" aria-label="From date">
+      <input type="date" id="to" aria-label="To date">
+    </div>
+
+    <div class="banner" id="banner" role="status"></div>
+
+    <!-- Google on the left, Meta on the right; one column on a phone or a
+         narrow window. Each side opens with the same block - its leads and
+         where they stand - so the two read across like for like. -->
+    <div class="ads-split">
+      <section class="ads-col is-google" aria-label="Google Ads">
+        <div class="ads-col-head">
+          <span class="ads-tag">Google Ads</span>
+          <span class="ads-asof" id="g-asof"></span>
+        </div>
+        <div class="banner" id="g-banner" role="status"></div>
+        <div class="ads-loading" id="g-loading" role="status" aria-live="polite" hidden>
+          <span class="spin" aria-hidden="true"></span>
+          <div><b>Loading Google Ads data…</b>
+            <span>Google can take up to a minute to answer. Everything fills in on its own, no need to refresh.</span></div>
+        </div>
+        <section class="card ads-ov" id="g-ov"></section>
+        <section class="card ads-leads" id="g-leads"><p class="empty">Loading…</p></section>
+        <section class="card" id="g-off" hidden>
+          <h2>Google Ads isn't connected</h2>
+          <p class="hint">Leads above come from the CRM. Spend, campaigns and search terms
+            appear here once <code>GOOGLE_ADS_SERVICE_ACCOUNT_JSON</code> and
+            <code>GOOGLE_ADS_CUSTOMER_ID</code> are set.</p>
+        </section>
+        <div class="ads-stack" id="g-live" hidden>
+
+    <!-- The four numbers Alec asked for, and nothing competing with them. -->
+    <section class="card">
+      <div class="card-head">
+        <div><h2>Spend</h2>
+          <p class="hint" id="g-top-hint"></p></div>
+      </div>
+      <div class="gtiles" id="g-tiles"></div>
+      <p class="hint" id="g-source-note"></p>
+    </section>
+
+    <section class="card" id="g-findings-card" hidden>
+      <div class="card-head">
+        <div><h2>Worth a look</h2>
+          <p class="hint">Only things with something to do about them.</p></div>
+      </div>
+      <div id="g-findings"></div>
+    </section>
+
+    <!-- High on the page on purpose. A campaign that is bidding on a
+         conversion signal which stopped arriving goes on spending at full
+         speed and reports nothing wrong, so the absence has to be as
+         visible as a number would have been. -->
+    <section class="card" id="g-track-card" hidden>
+      <div class="card-head">
+        <div><h2>Conversion tracking</h2>
+          <p class="hint">The four conversion actions in use: the website form,
+            which drives bidding, and the three outcomes the dashboard reports
+            back from the CRM. The agency's leftovers are tucked away below.</p></div>
+        <button class="toggle" id="g-track-reload" type="button">Re-check</button>
+      </div>
+      <div id="g-track-findings"></div>
+      <div class="scroll-x" id="g-track-actions"></div>
+      <div class="scroll-x" id="g-track-campaigns"></div>
+      <div id="g-track-errors"></div>
+      <div class="more-row" id="g-track-more"></div>
+      <div id="g-track-rest" hidden>
+        <div class="scroll-x" id="g-track-others"></div>
+        <div id="g-track-snippets"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <div><h2>Campaigns</h2>
+          <p class="hint">What Google spent, by campaign. Leads are not split
+            per campaign — form fills and calls reach the CRM tagged
+            "Google Ads", so cost per lead is an account-wide number.</p>
+          <div class="is-legend" id="g-is-legend" hidden>
+            <span><i style="background:var(--m-leads)"></i>Impressions shown</span>
+            <span><i style="background:var(--m-calls)"></i>Lost to budget</span>
+            <span><i style="background:var(--m-rate)"></i>Lost to Ad Rank</span>
+          </div></div>
+        <button class="toggle" data-table="g-camp-table">Table</button>
+      </div>
+      <div class="scroll-x" id="g-campaigns"></div>
+      <div class="data-table scroll-x" id="g-camp-table"></div>
+      <div class="more-row" id="g-camp-more"></div>
+    </section>
+
+    <section class="card" id="g-dev-card" hidden>
+      <div class="card-head">
+        <div><h2>Devices</h2>
+          <p class="hint">Where the money goes, and where the leads Google
+            can see come from. Mobile is also where tap-to-call happens, so a
+            weak-looking mobile row may simply be the one whose conversions
+            arrive by phone.</p></div>
+      </div>
+      <div class="dev-row" id="g-devices"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <div><h2>Search terms</h2>
+          <p class="hint">What people actually typed. The most expensive
+            first — this is where a search budget usually leaks.</p></div>
+        <button class="toggle" data-table="g-terms-table">Table</button>
+      </div>
+      <div class="scroll-x" id="g-terms"></div>
+      <div class="data-table scroll-x" id="g-terms-table"></div>
+      <div class="more-row" id="g-terms-more"></div>
+    </section>
+        </div>
+      </section>
+
+      <section class="ads-col is-meta" aria-label="Meta Ads">
+        <div class="ads-col-head">
+          <span class="ads-tag">Meta Ads</span>
+          <span class="ads-asof" id="m-freshness"></span>
+        </div>
+        <div class="banner" id="m-banner" role="status"></div>
+        <div class="ads-loading" id="m-loading" role="status" aria-live="polite" hidden>
+          <span class="spin" aria-hidden="true"></span>
+          <div><b>Loading Meta data…</b>
+            <span>Meta usually answers in a few seconds. Everything fills in on its own, no need to refresh.</span></div>
+        </div>
+        <section class="card ads-ov" id="m-ov"></section>
+        <section class="card ads-leads" id="m-leads"><p class="empty">Loading…</p></section>
+        <section class="card" id="m-off" hidden>
+          <h2>Meta isn't connected</h2>
+          <p class="hint">Leads above come from the CRM. Spend, campaigns, best ads and copy
+            appear here once <code>META_ACCESS_TOKEN</code> and
+            <code>META_AD_ACCOUNT_ID</code> are set.</p>
+        </section>
+        <div class="ads-stack" id="m-live" hidden>
+      <section class="card"><div class="card-head"><div><h2>Spend</h2><p class="hint">What Meta charged, and what each step cost.</p></div></div><div class="gtiles" id="m-tiles"></div></section>
+
+      <div class="grid" style="grid-template-columns:1fr;">
+        <section class="card">
+          <div class="card-head">
+            <div><h2>Delivery</h2>
+              <p class="hint" id="m-delivery-hint">How the money was spent, before
+                anyone picked up the phone.</p></div>
+          </div>
+          <div class="mini-row" id="m-delivery"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div><h2>Campaign performance</h2>
+              <p class="hint" id="m-camp-hint">Spend and leads from Meta, joined to what
+                those leads actually did in the CRM. Sorted by spend.</p></div>
+            <button class="toggle" data-table="m-campaigns-table">Table</button>
+          </div>
+          <div class="thumbs" id="m-thumbs"></div>
+          <div class="data-table scroll-x" id="m-campaigns-table"></div>
+          <div id="m-unmatched"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div><h2>Best ads</h2>
+              <p class="hint" id="m-ads-hint">Most leads first, then cheapest per lead.</p></div>
+          </div>
+          <div class="scroll-x" id="m-ads"></div>
+          <div class="more-row" id="m-ads-more"></div>
+        </section>
+
+        <!-- Copy. Its own fetch, started when this card first scrolls into
+             view, because it costs five more API calls than the rest of the
+             tab and most visits never scroll this far. -->
+        <section class="card" id="m-copy-card">
+          <div class="card-head">
+            <div><h2>What the words are doing</h2>
+              <p class="hint">Every headline, primary text and description
+                you're running, ranked by the leads it actually earned.
+                Variants inside a Dynamic Creative ad are split apart by Meta;
+                single-creative ads are pooled by their exact wording.</p></div>
+            <select id="m-copy-campaign" class="copy-filter" aria-label="Campaign">
+              <option value="">All campaigns</option>
+            </select>
+          </div>
+          <div class="seg copy-seg" id="m-copy-kinds" role="tablist">
+            <button data-kind="headline" aria-pressed="true">Headlines</button>
+            <button data-kind="body" aria-pressed="false">Primary text</button>
+            <button data-kind="description" aria-pressed="false">Descriptions</button>
+          </div>
+          <div id="m-copy-body"></div>
+          <div class="note" id="m-copy-note" hidden></div>
+        </section>
+      </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip" role="tooltip"></div>
+
+<script src="/app.js"></script>
+<script>
+/* ---------------------------------------------------------------- page */
+const K = window.KPI;
+const state = { from: null, to: null };
+const pctTxt = (v) => v === null || v === undefined ? "—" : `${Math.round(v * 10) / 10}%`;
+
+/* ---------------------------------------------------------- overview
+   The four numbers Alec gets every two weeks, per network: ad spend, leads,
+   cost per lead, Qualified + Contacted. Leads come from the CRM (fast);
+   spend from the network (Google can take a minute), so each tile fills in
+   as its half arrives. Cost per lead = spend / CRM leads. */
+const OV = { g: {}, m: {} };
+const money0 = (v) => "$" + Math.round(Number(v)).toLocaleString("en-US");
+function renderOV(col) {
+  const o = OV[col], host = K.$(col + "-ov");
+  if (!host) return;
+  const off = STATUS && !STATUS[col === "g" ? "google" : "meta"];
+  const spendTxt = off ? "—" : o.spend === undefined ? "…" : o.spend === null ? "—" : money0(o.spend);
+  const leadsTxt = o.leads === undefined ? "…" : K.fmt(o.leads);
+  const cpl = (o.spend && o.leads) ? o.spend / o.leads : null;
+  const cplTxt = (o.spend === undefined || o.leads === undefined) && !off ? "…"
+    : cpl === null ? "—" : money0(cpl);
+  const qcTxt = o.qc === undefined ? "…" : K.fmt(o.qc);
+  const tile = (k, v, s, hue) => `<div class="ovt" style="--hue:${hue}">
+      <div class="ovt-k">${K.esc(k)}</div><div class="ovt-v${v === "…" ? " is-wait" : ""}">${K.esc(v)}</div>
+      <div class="ovt-s">${K.esc(s)}</div></div>`;
+  host.innerHTML = `<div class="card-head"><div><h2>Overview</h2>
+      <p class="hint">${state.from && state.to ? `${K.shortDay(state.from)} – ${K.shortDay(state.to)}` : ""}</p></div></div>
+    <div class="ovtiles">
+      ${tile("Ad spend", spendTxt, off ? "not connected" : (o.spend === undefined ? "loading…" : "from the ad account"), "var(--net)")}
+      ${tile("New leads", leadsTxt, "new in the CRM", "var(--m-leads)")}
+      ${tile("Cost per new lead", cplTxt, "spend ÷ new leads", "var(--m-rate)")}
+      ${tile("Qualified + Contacted", qcTxt, o.leads ? `of ${K.fmt(o.leads)} new leads` : "", "var(--m-contacted)")}
+    </div>`;
+}
+function adsSpend(col, spend) { OV[col].spend = spend; renderOV(col); }
+
+/* Where a network's leads stand: the Overview top row, for one source. */
+const STAGE_KIND_LABEL = {
+  new: "Not reached yet", qualified: "Qualified + Contacted", offer: "Verbal offer",
+  sent: "Contract sent", contract: "Under contract", closed: "Closed",
+  dq: "Disqualified", lost: "Opportunity lost", other: "Before GHL",
+};
+
+function renderLeadPanel(host, p, net) {
+  if (!p) { host.innerHTML = '<p class="empty">No data.</p>'; return; }
+  const of = (n, d) => d ? `${pctTxt(100 * n / d)} of Q+C` : "";
+  const tiles = [
+    { k: "Leads", v: K.fmt(p.leads), metric: "newLeadsAssigned", s: "created in this range" },
+    { k: "Qualified + Contacted", v: K.fmt(p.qualified), metric: "contacts",
+      s: p.leads ? `${pctTxt(p.qualifiedPct)} of leads` : "—" },
+    { k: "Q+C rate", v: p.leads ? pctTxt(p.qualifiedPct) : "—", metric: "contactRate",
+      s: `${K.fmt(p.qualified)} of ${K.fmt(p.leads)} leads` },
+    { k: "Verbal offers", v: K.fmt(p.offers), metric: "verbalOffersMade",
+      s: of(p.offers, p.qualified) || "&nbsp;" },
+    { k: "Contracts sent", v: K.fmt(p.contractsSent), metric: "contractsSent",
+      s: of(p.contractsSent, p.qualified) || "&nbsp;" },
+    { k: "Contracts signed", v: K.fmt(p.contracts), metric: "contractsAccepted",
+      s: of(p.contracts, p.qualified) || "&nbsp;" },
+    { k: "Disqualified", v: K.fmt(p.disqualified), metric: "deadOpportunities",
+      s: (p.leads ? `${pctTxt(p.disqualifiedPct)} of leads` : "—")
+         + (p.lost ? ` · ${K.fmt(p.lost)} lost` : "") },
+    { k: "Closed", v: K.fmt(p.closed), metric: "closed", gold: true, s: "&nbsp;" },
+  ];
+  const tileHtml = tiles.map(t => `
+    <div class="atile${t.gold ? " is-gold" : ""}${t.v === "0" ? " is-zero" : ""}"
+         style="--hue:${t.gold ? "var(--m-gold)" : K.hue(t.metric)}">
+      <div class="at-top"><span class="at-chip">${K.icon(t.gold ? "contractsAccepted" : t.metric)}</span>
+        <span class="at-k">${K.esc(t.k)}</span></div>
+      <div class="at-v">${K.esc(t.v)}</div>
+      <div class="at-s">${t.s.startsWith("&") ? t.s : K.esc(t.s)}</div>
+    </div>`).join("");
+
+  const total = p.stages.reduce((n, s) => n + s.count, 0);
+  const bar = !total ? "" : `
+    <div class="sbar" role="img" aria-label="Where the ${K.fmt(total)} leads are now">
+      ${p.stages.map(s => `<span class="sb k-${s.kind}" style="flex:${s.count}"
+          title="${K.esc(s.name)}: ${K.fmt(s.count)}"></span>`).join("")}
+    </div>
+    <ul class="slegend">
+      ${p.stages.map(s => `<li><i class="k-${s.kind}"></i><span class="sl-n">${K.esc(s.name)}</span>
+        <b>${K.fmt(s.count)}</b><span class="sl-p">${pctTxt(100 * s.count / total)}</span></li>`).join("")}
+    </ul>`;
+
+  host.innerHTML = `
+    <div class="card-head"><div><h2>Leads</h2>
+      <p class="hint">${net} leads created in this range, and how far each one got.
+        Same rules as the Overview.</p></div></div>
+    <div class="atiles">${tileHtml}</div>
+    ${total ? `<div class="snow"><div class="snow-h">Where they are now</div>${bar}</div>`
+            : `<p class="empty">No ${net} leads in this range.</p>`}`;
+}
+
+async function loadLeads() {
+  const q = new URLSearchParams();
+  if (state.from) q.set("from", state.from);
+  if (state.to) q.set("to", state.to);
+  try {
+    const res = await fetch(`/api/ads/leads?${q}`, { credentials: "same-origin" });
+    if (res.status === 401) { location.href = "/login"; return; }
+    if (res.status === 403 && K.onForbidden && K.onForbidden()) return;
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const d = await res.json();
+    renderLeadPanel(K.$("g-leads"), d.google, "Google");
+    renderLeadPanel(K.$("m-leads"), d.meta, "Meta");
+    for (const [col, p] of [["g", d.google], ["m", d.meta]]) {
+      OV[col].leads = (p || {}).leads; OV[col].qc = (p || {}).qualified; renderOV(col);
+    }
+    K.renderFreshness(d.freshness);
+  } catch (err) {
+    const b = K.$("banner");
+    b.className = "banner show";
+    b.textContent = "Could not load leads: " + err.message;
+  }
+}
+</script>
+
+<script>
+/* ------------------------------------------------- Google (left column) */
+const G = (() => {
+const $ = (id) => K.$("g-" + id);
+let TERM_LIMIT = 15;
+
+const money = (v, dp) => v === null || v === undefined ? "—"
+  : "$" + Number(v).toLocaleString("en-US",
+      { minimumFractionDigits: dp ?? 0, maximumFractionDigits: dp ?? 0 });
+const pct = (v) => v === null || v === undefined ? "—"
+  : `${Math.round(v * 10) / 10}%`;
+
+/**
+ * The top four. Deliberately a flat row of plain numbers rather than
+ * anything clever: this is the part Alec reads, and every pixel spent on
+ * decoration here is a pixel spent arguing with the number.
+ */
+function renderTiles(d) {
+  const c = d.crm || {}, band = d.cplBand || {}, t = d.totals || {};
+  const cpl = d.costPerLead;
+  const per = (n) => (d.spend === null || d.spend === undefined || !n) ? null : d.spend / n;
+  const cplState = cpl === null || cpl === undefined ? ""
+    : (cpl > band.high ? "bad" : (cpl <= band.low ? "good" : "warn"));
+  const tiles = [
+    { k: "Spend", v: money(d.spend), hue: "--m-calls",
+      s: t.clicks ? `${K.fmt(t.clicks)} clicks` : "from Google Ads" },
+    { k: "Cost per new lead", v: cpl === null || cpl === undefined ? "—" : money(cpl),
+      s: `${K.fmt(c.leads || 0)} new leads`, state: cplState, hue: "--m-rate" },
+    { k: "Cost per Qualified + Contacted", v: money(per(c.qualified)), hue: "--m-contacted",
+      s: `${K.fmt(c.qualified || 0)} Qualified + Contacted` },
+    { k: "Cost per contract", v: money(per(c.contracts)), hue: "--m-contracts",
+      s: `${K.fmt(c.contracts || 0)} signed` },
+  ];
+  $("tiles").innerHTML = tiles.map(x =>
+    `<div class="gtile hued${x.state ? " is-" + x.state : ""}" style="--hue:var(${x.hue})">
+       <div class="gt-k">${K.esc(x.k)}</div>
+       <div class="gt-v">${K.esc(x.v)}</div>
+       <div class="gt-s">${K.esc(x.s)}</div>
+     </div>`).join("");
+
+  const gap = d.formFillGap;
+  $("source-note").innerHTML = (d.spend === null || d.spend === undefined)
+    ? `<b>Spend is unavailable.</b> The lead counts above are still live from the CRM.`
+    : `Leads are counted in the CRM, not from Google's conversions — Google records a
+       form fill and nothing for a phone call.
+       ${gap === null ? "" : `Google counted
+       <b>${K.fmt(Math.round(t.formFills || 0))}</b> form fills against
+       <b>${K.fmt(c.leads || 0)}</b> leads in the CRM;
+       ${gap > 0 ? `the extra <b>${K.fmt(gap)}</b> is roughly the phone.`
+                 : gap < 0 ? `the CRM is <b>${K.fmt(-gap)}</b> short, which is
+                   worth checking.` : "they agree."}`}`;
+  $("top-hint").textContent = `${K.shortDay(d.range.from)} – ${K.shortDay(d.range.to)}`;
+}
+
+function renderFindings(d) {
+  const rows = d.findings || [];
+  $("findings-card").hidden = !rows.length;
+  $("findings").innerHTML = rows.map(f =>
+    `<div class="finding is-${K.esc(f.level)}">
+       <div class="fi-t">${K.esc(f.title)}</div>
+       <div class="fi-d">${K.esc(f.detail)}</div>
+     </div>`).join("");
+}
+
+/* Google's own enum names, in the words somebody setting this up would
+   use. Anything unmapped falls through to Title Case rather than being
+   hidden, because an unrecognised conversion type is itself worth seeing. */
+const ACTION_TYPES = {
+  WEBPAGE: "Website / form",
+  WEBSITE_CALL: "Call from website number",
+  CLICK_TO_CALL: "Click-to-call tap",
+  AD_CALL: "Call from the ad",
+  GOOGLE_HOSTED_CALL: "Google forwarding call",
+  UPLOAD_CLICKS: "Offline import — click",
+  UPLOAD_CALLS: "Offline import — call",
+  STORE_SALES: "Store sales import",
+};
+const SNIPPET_TYPES = {
+  WEBPAGE: "Page load / form submit",
+  WEBPAGE_ONCLICK: "On click",
+  CLICK_TO_CALL: "Click-to-call",
+  WEBSITE_CALL: "Website call (number swap)",
+};
+const titleCase = (s) => String(s || "").toLowerCase().replace(/_/g, " ")
+  .replace(/\b\w/g, (c) => c.toUpperCase());
+
+function renderTracking(t) {
+  if (!t) { $("track-card").hidden = true; return; }
+  $("track-card").hidden = false;
+
+  $("track-findings").innerHTML = (t.findings || []).map(f =>
+    `<div class="finding is-${K.esc(f.level)}">
+       <div class="fi-t">${K.esc(f.title)}</div>
+       <div class="fi-d">${K.esc(f.detail)}</div>
+     </div>`).join("");
+
+  // --- the conversion actions in use, then everything else behind a toggle
+  const actions = t.actions || [];
+  const used = actions.filter(a => a.inUse);
+  const rest = actions.filter(a => !a.inUse);
+  const recordedCell = (a) => {
+    const on = a.status === "ENABLED";
+    // Zero on a live action is worth a look, so it is coloured. Zero on a
+    // paused or removed one is just paused, and is left alone.
+    const cls = !on ? "" : (a.recorded > 0 ? "some" : "zero");
+    return `<span class="tk-n ${cls}">${K.fmt(Math.round(a.recorded || 0))}</span>`;
+  };
+  const pill = (a) => `<span class="tk-pill ${a.status === "ENABLED" ? "on" : "off"}">`
+    + `${K.esc(titleCase(a.status) || "—")}</span>`;
+  $("track-actions").innerHTML = !used.length
+    ? '<p class="empty">None of the conversion actions in use were found in the account.</p>'
+    : `<table class="tight"><thead><tr><th>Conversion action</th>
+         <th class="cell-l">Used for</th><th>Status</th><th>Recorded</th></tr></thead><tbody>`
+      + used.map(a => `<tr>
+          <td>${K.esc(a.name)}</td>
+          <td class="cell-l">${K.esc(a.usedFor || "")}</td>
+          <td>${pill(a)}</td>
+          <td>${(a.usedFor || "").startsWith("From the CRM") && !a.recorded
+            // No closes yet is a quiet month, not broken tracking.
+            ? '<span class="tk-n">0</span>' : recordedCell(a)}</td>
+        </tr>`).join("")
+      + "</tbody></table>";
+
+  const enabledRest = rest.filter(a => a.status === "ENABLED").length;
+  $("track-others").innerHTML = !rest.length ? "" :
+    `<p class="tk-cap">Not in use</p>
+     <table class="tight"><thead><tr><th>Conversion action</th>
+       <th>What it tracks</th><th>Status</th><th>Recorded</th></tr></thead><tbody>`
+    + rest.map(a => `<tr class="tk-dim">
+        <td>${K.esc(a.name)}${a.primary && a.status === "ENABLED"
+          ? '<span class="tk-sub">still marked primary in Google Ads</span>' : ""}</td>
+        <td>${K.esc(ACTION_TYPES[a.type] || titleCase(a.type) || "—")}</td>
+        <td>${pill(a)}</td>
+        <td>${recordedCell(a)}</td>
+      </tr>`).join("")
+    + "</tbody></table>";
+  const restOpen = !$("track-rest").hidden;
+  $("track-more").innerHTML = !rest.length ? "" :
+    `<button class="toggle" id="g-track-toggle" type="button">${restOpen ? "Hide"
+      : "Show"} ${K.fmt(rest.length)} not in use${enabledRest && !restOpen
+      ? ` (${enabledRest} still enabled)` : ""}</button>`;
+  const tg = $("track-toggle");
+  if (tg) tg.addEventListener("click", () => {
+    $("track-rest").hidden = !$("track-rest").hidden;
+    renderTracking(t);
+  });
+
+  // --- what the live campaigns are bidding on
+  const camps = t.campaigns || [];
+  $("track-campaigns").innerHTML = !camps.length ? "" :
+    `<div class="tk-snips"><p class="tk-cap">What the live campaigns are
+       bidding on</p><table class="tight"><thead><tr>
+       <th>Live campaign</th><th>Bidding on</th><th>Spend</th>
+       <th>Conversions</th></tr></thead><tbody>`
+    + camps.map(c => {
+        // Automated bidding plus zero conversions is the expensive case.
+        const starved = c.needsConversions && !c.conversions;
+        return `<tr>
+          <td>${K.esc(c.name)}</td>
+          <td>${K.esc(c.biddingLabel || "—")}
+            ${starved ? '<span class="tk-sub">needs conversions and has none</span>' : ""}</td>
+          <td>${money(c.spend)}</td>
+          <td><span class="tk-pill ${starved ? "dead"
+               : c.conversions ? "on" : "off"}">${K.fmt(Math.round(c.conversions || 0))}</span></td>
+        </tr>`;
+      }).join("")
+    + "</tbody></table></div>";
+
+  // --- the real snippets, so setup is copy and paste rather than a hunt
+  const snips = t.snippets || [];
+  $("track-snippets").innerHTML = !snips.length ? "" :
+    '<div class="tk-snips"><p class="tk-cap">Tag snippets from the account (setup only)'
+    + '</p>' + snips.map((s, i) => `
+      <details class="tk-snip">
+        <summary><span>${K.esc(s.action)} — ${K.esc(SNIPPET_TYPES[s.type] || titleCase(s.type))}</span>
+          <button class="toggle tk-copy" type="button" data-snip="${i}">Copy</button></summary>
+        <pre id="g-snip-${i}">${K.esc((s.globalSiteTag ? s.globalSiteTag + "\n\n" : "")
+                                     + s.eventSnippet)}</pre>
+      </details>`).join("") + "</div>";
+
+  const errs = Object.entries(t.errors || {});
+  $("track-errors").innerHTML = errs.map(([k, v]) =>
+    `<div class="tk-err"><b>${K.esc(titleCase(k))} could not be read:</b>
+      ${K.esc(v)}</div>`).join("");
+}
+
+// Delegated, because the snippet list is replaced on every reload.
+$("track-snippets").addEventListener("click", (evt) => {
+  const btn = evt.target.closest(".tk-copy");
+  if (!btn) return;
+  // The button lives inside <summary>, which would otherwise toggle open.
+  evt.preventDefault();
+  const pre = $("snip-" + btn.dataset.snip);
+  if (!pre) return;
+  navigator.clipboard.writeText(pre.textContent).then(() => {
+    btn.textContent = "Copied";
+    setTimeout(() => { btn.textContent = "Copy"; }, 1600);
+  }).catch(() => { btn.textContent = "Select it instead"; });
+});
+
+async function loadTracking() {
+  const q = new URLSearchParams();
+  if (state.from) q.set("from", state.from);
+  if (state.to) q.set("to", state.to);
+  try {
+    const res = await fetch(`/api/google/tracking?${q}`,
+                            { credentials: "same-origin" });
+    if (!res.ok) { $("track-card").hidden = true; return; }
+    renderTracking(await res.json());
+  } catch (err) {
+    // Spend and leads are the page's job; this panel going quiet must not
+    // take them with it.
+    $("track-card").hidden = true;
+  }
+}
+
+/**
+ * Impression share as a part-to-whole, not a single number.
+ *
+ * "You showed on 18% of eligible searches" is useless on its own. The
+ * question is always WHY the other 82% did not happen, and there are only
+ * two answers with two opposite fixes. So the bar is split, always, even
+ * when one segment is nearly nothing.
+ */
+function shareBar(r) {
+  const got = r.searchImpressionShare;
+  if (got === null || got === undefined) return "";
+  const pc = (v) => Math.max(0, Math.min(100, (v || 0) * 100));
+  const shown = pc(got), budget = pc(r.lostToBudget), rank = pc(r.lostToRank);
+  const total = shown + budget + rank;
+  // Google's three figures can drift a point or two from 100; normalise so
+  // the bar is a true part-to-whole rather than subtly mis-scaled.
+  const k = total > 0 ? 100 / total : 0;
+  const seg = (cls, val, label) => val <= 0 ? "" :
+    `<span class="is-seg ${cls}" style="width:${(val * k).toFixed(2)}%"
+       data-tip="${label} · ${val.toFixed(0)}%"></span>`;
+  const n = (v) => `${Math.round(v)}%`;
+  return `
+    <div class="isbar" role="img" aria-label="Impression share: ${n(shown)} shown,
+         ${n(budget)} lost to budget, ${n(rank)} lost to Ad Rank">
+      ${seg("is-shown", shown, "Impressions shown")}
+      ${seg("is-budget", budget, "Lost to budget")}
+      ${seg("is-rank", rank, "Lost to Ad Rank")}
+    </div>
+    <div class="is-nums">
+      <span class="is-cap">Impression share</span>
+      <span>Shown <b>${n(shown)}</b></span>
+      <span>Lost to budget <b>${n(budget)}</b></span>
+      <span>Lost to rank <b>${n(rank)}</b></span>
+    </div>`;
+}
+
+function wireShareTips() {
+  document.querySelectorAll("#g-campaigns .is-seg").forEach(el => {
+    el.addEventListener("mousemove", (e) =>
+      K.showTip(K.esc(el.dataset.tip), e));
+    el.addEventListener("mouseleave", K.hideTip);
+  });
+}
+
+function renderDevices(d) {
+  const rows = d.devices || [];
+  $("dev-card").hidden = !rows.length;
+  if (!rows.length) return;
+  $("devices").innerHTML = rows.map(r => `
+    <div class="dev">
+      <div class="dev-k">${K.esc(r.device)}</div>
+      <div class="dev-v">${money(r.spend)}</div>
+      <div class="dev-s">${r.share === null || r.share === undefined ? ""
+          : pct(r.share * 100) + " of spend · "}${K.fmt(r.clicks)} clicks${
+          r.cpc ? " · " + money(r.cpc, 2) + " CPC" : ""}</div>
+      <div class="dev-bar"><i style="width:${((r.share || 0) * 100).toFixed(1)}%"></i></div>
+    </div>`).join("");
+}
+
+let showAllCampaigns = false;
+function renderCampaigns(d) {
+  const all = d.campaigns || [];
+  // Paused and removed campaigns are history. They stay one click away, and
+  // a paused one that still spent in the range is counted in the button.
+  const live = all.filter(r => (r.status || "").toLowerCase() === "enabled");
+  const rows = showAllCampaigns ? all : live;
+  const hiddenN = all.length - live.length;
+  $("camp-more").innerHTML = !hiddenN ? "" :
+    `<button class="toggle" id="g-camp-toggle" type="button">${showAllCampaigns
+      ? "Show enabled only" : `Show ${K.fmt(hiddenN)} paused or removed`}</button>`;
+  const ct = $("camp-toggle");
+  if (ct) ct.addEventListener("click", () => { showAllCampaigns = !showAllCampaigns; renderCampaigns(d); });
+  $("is-legend").hidden = !rows.some(r =>
+    r.searchImpressionShare !== null && r.searchImpressionShare !== undefined);
+  if (!rows.length) {
+    $("campaigns").innerHTML = '<p class="empty">No enabled campaigns spent in this range.</p>';
+    $("camp-table").innerHTML = "";
+    return;
+  }
+  const max = Math.max.apply(null, rows.map(r => r.spend)) || 1;
+  $("campaigns").innerHTML = rows.map(r => `
+    <div class="crow" data-name="${K.esc(r.name)}">
+      <div class="crow-head">
+        <span class="crow-name">${K.esc(r.name)}</span>
+        <span class="crow-spend">${money(r.spend)}</span>
+      </div>
+      <div class="crow-bar"><div style="width:${(r.spend / max * 100).toFixed(1)}%"></div></div>
+      <div class="crow-nums">
+        <span>${K.fmt(r.clicks)} clicks</span>
+        <span>${K.fmt(r.impressions)} impressions</span>
+        <span>${r.avgCpc ? money(r.avgCpc, 2) + " avg CPC" : "—"}</span>
+        <span>${K.fmt(r.formFills)} form fills</span>
+        ${r.status ? `<span class="crow-status">${K.esc(r.status)}</span>` : ""}
+      </div>
+      ${shareBar(r)}
+    </div>`).join("");
+  wireShareTips();
+
+  $("camp-table").innerHTML =
+    "<table><thead><tr><th>Campaign</th><th>Status</th><th>Spend</th>"
+    + "<th>Clicks</th><th>Impressions</th><th>Avg CPC</th>"
+    + "<th>Form fills</th></tr></thead><tbody>"
+    + rows.map(r => `<tr><td>${K.esc(r.name)}</td>`
+        + `<td>${K.esc(r.status || "—")}</td><td>${money(r.spend, 2)}</td>`
+        + `<td>${K.fmt(r.clicks)}</td><td>${K.fmt(r.impressions)}</td>`
+        + `<td>${r.avgCpc ? money(r.avgCpc, 2) : "—"}</td>`
+        + `<td>${K.fmt(r.formFills)}</td></tr>`).join("")
+    + "</tbody></table>";
+}
+
+function renderTerms(d) {
+  const all = d.searchTerms || [];
+  const rows = all.slice(0, TERM_LIMIT);
+  if (!all.length) {
+    $("terms").innerHTML = '<p class="empty">No search terms in this range.</p>';
+    $("terms-table").innerHTML = ""; $("terms-more").innerHTML = "";
+    return;
+  }
+  $("terms").innerHTML =
+    "<table class=\"tight\"><thead><tr><th>Search term</th><th>Match</th>"
+    + "<th>Spend</th><th>Clicks</th><th>Impr.</th><th>Form fills</th>"
+    + "</tr></thead><tbody>"
+    + rows.map(t => {
+        // A term that costs money and gets no clicks is the thing to act
+        // on, so it is the thing that is marked.
+        const dead = t.spend > 0 && !t.clicks;
+        return `<tr${dead ? ' class="term-dead"' : ""}>`
+          + `<td>${K.esc(t.term)}</td><td>${K.esc(t.matchType || "—")}</td>`
+          + `<td>${money(t.spend, 2)}</td><td>${K.fmt(t.clicks)}</td>`
+          + `<td>${K.fmt(t.impressions)}</td><td>${K.fmt(t.formFills)}</td></tr>`;
+      }).join("")
+    + "</tbody></table>";
+  $("terms-table").innerHTML = "";
+  $("terms-more").innerHTML = all.length > rows.length
+    ? `<button class="toggle" id="g-more-terms">Show all ${K.fmt(all.length)}</button>`
+    : "";
+  const more = $("more-terms");
+  if (more) more.addEventListener("click", () => {
+    TERM_LIMIT = all.length; renderTerms(d);
+  });
+}
+
+async function reload() {
+  const q = new URLSearchParams();
+  if (state.from) q.set("from", state.from);
+  if (state.to) q.set("to", state.to);
+  // Started before the await below so the two reads overlap, and
+  // deliberately not awaited: it handles its own failures, and the tracking
+  // panel is extra that must never hold up spend and leads.
+  loadTracking();
+  let d;
+  try {
+    const res = await fetch(`/api/google?${q}`, { credentials: "same-origin" });
+    if (res.status === 403 && K.onForbidden && K.onForbidden()) return;
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    d = await res.json();
+  } catch (err) {
+    const b = $("banner");
+    b.className = "banner show";
+    b.textContent = "Could not load Google Ads: " + err.message;
+    adsSpend("g", null);
+    return;
+  }
+  adsSpend("g", d.spend);
+  K.renderFreshness(d.freshness);
+  const b = $("banner");
+  if (d.error) {
+    b.className = "banner warn show";
+    b.innerHTML = `<b>Google Ads did not answer:</b> ${K.esc(d.error)}`;
+  } else { b.className = "banner"; b.textContent = ""; }
+
+  TERM_LIMIT = 15;
+  renderTiles(d); renderFindings(d); renderCampaigns(d);
+  renderDevices(d); renderTerms(d);
+}
+
+
+return {
+  reload,
+  wire() { $("track-reload").addEventListener("click", loadTracking); },
+};
+})();
+</script>
+
+<script>
+/* -------------------------------------------------- Meta (right column) */
+const M = (() => {
+const $ = (id) => K.$("m-" + id);
+const money = (n) => (n === null || n === undefined) ? "—"
+  : "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2,
+                                              maximumFractionDigits: 2 });
+const money0 = (n) => (n === null || n === undefined) ? "—"
+  : "$" + Math.round(Number(n)).toLocaleString("en-US");
+
+/**
+ * Good / watch / over, against the targets in the environment.
+ *
+ * Only ever a colour and a word - never a number the page invents. The
+ * thresholds are configurable precisely because a good CPL in this market is
+ * not a good CPL in another one, and a hard-coded target would quietly become
+ * a lie the first time the market moved.
+ */
+let GOALS = {};
+function verdict(kind, value) {
+  if (value === null || value === undefined) return null;
+  const v = Number(value);
+  if (kind === "cpl") return v <= GOALS.cplLow ? ["good", "on target"]
+    : v <= GOALS.cplHigh ? ["watch", "acceptable"] : ["over", "above target"];
+  if (kind === "ctr") return v >= GOALS.ctrMin ? ["good", "on target"]
+    : ["over", `below ${GOALS.ctrMin}%`];
+  if (kind === "cpm") return v <= GOALS.cpmMax ? ["good", "on target"]
+    : ["over", `above $${GOALS.cpmMax}`];
+  if (kind === "freq") return v < GOALS.freqLow ? ["watch", "still building"]
+    : v <= GOALS.freqHigh ? ["good", "healthy"] : ["over", "fatiguing"];
+  return null;
+}
+const pill = (kind, value) => {
+  const v = verdict(kind, value);
+  return v ? ` <span class="goal ${v[0]}">${K.esc(v[1])}</span>` : "";
+};
+
+function renderTiles(d) {
+  // Same tiles as the Google side, so the two columns read across. The
+  // change against the previous period stays, as a small line under each.
+  const t = d.totals || {}, was = d.prevTotals || {};
+  const v = verdict("cpl", t.cpl);
+  const state = !v ? "" : v[0] === "good" ? "good" : v[0] === "watch" ? "warn" : "bad";
+  const tiles = [
+    { k: "Spend", v: money0(t.spend), hue: "--m-calls",
+      s: `${K.fmt(t.impressions)} impressions`,
+      d: K.change(t.spend, was.spend, "spend"), f: money0 },
+    { k: "Cost per lead", tag: "includes duplicates", v: money0(t.cpl), hue: "--m-rate", state,
+      s: `Meta's count: ${K.fmt(t.leads)} form fills, repeat sellers included · `
+         + `${K.fmt(t.ifLeads || 0)} new in the CRM · target $${GOALS.cplLow}`,
+      d: K.change(t.cpl, was.cpl, "cpl"), f: money0 },
+    { k: "Cost per Qualified + Contacted", v: money0(t.costPerQualified), hue: "--m-contacted",
+      s: `${K.fmt(t.qualified)} Qualified + Contacted`,
+      d: K.change(t.costPerQualified, was.costPerQualified, "costPerQualified"), f: money0 },
+    { k: "Cost per contract", v: money0(t.costPerContract), hue: "--m-contracts",
+      s: `${K.fmt(t.contracts)} signed`,
+      d: K.change(t.costPerContract, was.costPerContract, "costPerContract"), f: money0 },
+  ];
+  $("tiles").innerHTML = tiles.map(x =>
+    `<div class="gtile hued${x.state ? " is-" + x.state : ""}" style="--hue:var(${x.hue})">
+       <div class="gt-k">${K.esc(x.k)}${x.tag ? ` <span class="gt-tag">${K.esc(x.tag)}</span>` : ""}</div>
+       <div class="gt-v">${K.esc(x.v)}</div>
+       <div class="gt-s">${K.esc(x.s)}</div>
+       ${x.d ? `<div class="gt-d">${K.delta(x.d, x.f)}</div>` : ""}
+     </div>`).join("");
+}
+
+function renderDelivery(d) {
+  const t = d.totals || {};
+  const cell = (metric, label, value, extra) =>
+    `<div class="mini${value === "—" ? " zero" : ""}" style="--hue:${K.hue(metric)}">`
+    + `<div class="k">${K.esc(label)}</div><div class="v">${value}</div>`
+    + `<div class="sub">${extra || "&nbsp;"}</div></div>`;
+  $("delivery").innerHTML = [
+    cell("textMessages", "Impressions", K.fmt(t.impressions)),
+    cell("textMessages", "Reach", K.fmt(t.reach)),
+    cell("textMessages", "Clicks", K.fmt(t.clicks)),
+    cell("contactRate", "CTR", t.ctr ? t.ctr.toFixed(2) + "%" : "—",
+         (verdict("ctr", t.ctr) || ["", ""])[1]),
+    cell("contactRate", "CPM", money(t.cpm), (verdict("cpm", t.cpm) || ["", ""])[1]),
+    cell("contactRate", "Frequency", t.frequency ? t.frequency.toFixed(2) : "—",
+         (verdict("freq", t.frequency) || ["", ""])[1]),
+    cell("contactRate", "Cost per click", money(t.cpc)),
+  ].join("");
+}
+
+// A campaign matched on its "#15" rather than its full name is a guess. It is
+// shown either way - dropping it would hide spend - but it says so, because
+// acting on a mis-joined row is worse than acting on no row.
+const MATCH_NOTE = {
+  exact: "", number: "matched on campaign number",
+  contains: "matched on a partial name",
+};
+
+/**
+ * One small card per campaign: where it stands, and which way it is moving.
+ *
+ * A row of stat tiles rather than a chart. The question is "which of these is
+ * getting better or worse", and at thirteen campaigns colour can no longer
+ * carry identity - past about eight categories adjacent hues blur, so a
+ * thirteen-series chart would be unreadable by construction. Each card leads
+ * with cost per lead, the one number with a target against it.
+ *
+ * Every movement is an arrow plus a figure, never colour on its own. Cheaper
+ * is better for a cost, so arrow and colour deliberately disagree: a falling
+ * CPL is a green down-arrow. K.change knows which metrics invert.
+ */
+/** "FB #15 - (1-8) - $25 - 45+ Interests - …" -> "$25 - 45+ Interests - …" */
+function campaignTail(name) {
+  return (name || "").replace(/^[^-]*-\s*\([^)]*\)\s*-?\s*/, "");
+}
+
+function renderThumbs(d) {
+  const rows = d.campaigns || [];
+  const arrow = (dir) => dir === "up" ? "↑" : dir === "down" ? "↓" : "→";
+
+  $("thumbs").innerHTML = rows.map(c => {
+    const v = verdict("cpl", c.cpl);
+    const short = K.adset(c.campaign) || c.campaign || "—";
+    // The shared tail says nothing at the row level, but it is the only place
+    // the budget and audience are written down - so it stays, quietly, and in
+    // full on hover.
+    const tail = campaignTail(c.campaign);
+    const prev = c.prev || {};
+    const matched = c.matchedBy !== null && c.matchedBy !== undefined;
+    const cplDelta = c.prev ? K.change(c.cpl, prev.cpl, "cpl") : null;
+    const qualDelta = (c.prev && matched && prev.qualified !== undefined
+                       && prev.qualified !== null)
+      ? K.change(c.qualified, prev.qualified, "contacts") : null;
+    // Status colour, for a status. The word beside it carries the same
+    // meaning, so the colour is never the only thing saying it.
+    const accent = !v ? "var(--text-3)"
+      : v[0] === "good" ? "var(--up)"
+      : v[0] === "watch" ? "var(--warning)" : "var(--down)";
+
+    return `<article class="thumb" style="--hue:${accent}">`
+      + `<header><div class="t-name" title="${K.esc(c.campaign || "")}">`
+      + `${K.esc(short)}</div>`
+      // The pill always reports the CPL verdict, so the accent stripe is never
+      // the only thing saying it. Whether the campaign joined to InvestorFuse
+      // is a different fact and gets its own quiet marker further down.
+      + (v ? `<span class="goal ${v[0]}">${K.esc(v[1])}</span>` : "")
+      + `</header>`
+      + (tail ? `<div class="t-tail">${K.esc(tail)}</div>` : "")
+      + `<div class="t-hero"><span class="t-v">${money(c.cpl)}</span>`
+      + `<span class="t-k">per lead</span></div>`
+      + `<div class="t-delta">${cplDelta ? K.delta(cplDelta, money)
+          : '<span class="delta flat"><i>→</i>new</span>'
+            + '<span class="delta-vs"> nothing last period</span>'}</div>`
+      + `<dl class="t-rows">`
+      + `<div><dt>Spend</dt><dd>${money0(c.spend)}</dd></div>`
+      + `<div><dt>Leads</dt><dd>${K.fmt(c.leads)}</dd></div>`
+      // Both rows are drawn even when there is nothing to put in them, so
+      // cards in a row end at the same height and the grid stays a grid.
+      + (matched
+          ? `<div><dt>Qualified + Contacted</dt><dd>${K.fmt(c.qualified)}`
+            + (qualDelta ? ` <span class="delta ${qualDelta.tone} tight"`
+                + ` title="${K.esc(qualDelta.title)}">`
+                + `<i>${arrow(qualDelta.dir)}</i>${K.esc(qualDelta.text)}</span>` : "")
+            + `</dd></div>`
+            + `<div><dt>Cost / qual.</dt><dd>${money(c.costPerQualified)}</dd></div>`
+          // Not red: an unjoined campaign is unknown, not bad, and the status
+          // colours are reserved for things that actually are good or bad.
+          //
+          // Three different facts used to read as the same "no IF match", and
+          // the difference is the whole question when somebody is working out
+          // which campaign to report: a campaign that delivered leads and got
+          // none of them tagged is broken; one that delivered NO leads has
+          // nothing to tag and is not evidence of anything.
+          : `<div><dt>Qualified + Contacted</dt><dd class="muted-cell">—</dd></div>`
+            + `<div class="t-note"><dt>Cost / qual.</dt>`
+            + (!c.leads
+                ? `<dd class="muted-cell" title="Meta delivered no leads for `
+                  + `this campaign in this range, so there is nothing for `
+                  + `the CRM to have tagged. Not a tracking problem.">`
+                  + `no leads yet</dd>`
+                : c.tracking === "off"
+                ? `<dd class="muted-cell" title="Meta delivered `
+                  + `${K.fmt(c.leads)} leads for this campaign and none reached `
+                  + `the CRM carrying its name — the campaign tag is `
+                  + `almost certainly not set up for it.">not tracking</dd>`
+                : `<dd class="muted-cell" title="No CRM leads carry `
+                  + `this campaign name, so nothing downstream can be `
+                  + `attributed to it.">no IF match</dd>`)
+            + `</div>`)
+      + `</dl></article>`;
+  }).join("");
+
+  const p = d.previousRange;
+  if (p) {
+    $("camp-hint").textContent = "Spend and leads from Meta, joined to what those "
+      + `leads did in the CRM. Movement is against ${p.from} – ${p.to}.`;
+  }
+}
+
+function renderCampaigns(d) {
+  const rows = d.campaigns || [];
+  if (!rows.length) {
+    $("thumbs").innerHTML = '<p class="hint">No Meta spend in this range.</p>';
+    $("campaigns-table").innerHTML = "";
+    $("unmatched").innerHTML = "";
+    return;
+  }
+  const body = rows.map(c => {
+    const note = MATCH_NOTE[c.matchedBy];
+    // Muted, matching the cards: a campaign that did not join is unknown,
+    // not bad, and red here would rank it alongside a genuinely blown CPL.
+    // The approximate-match flag stays amber - a guessed join IS a caution.
+    // "not tracking" replaces the older "no IF match" wording wherever Meta
+    // delivered enough leads to be sure: "no match" describes what the join
+    // did, "not tracking" names the cause and is what somebody can act on.
+    const flag = (c.matchedBy === null && !c.leads)
+      ? '<span class="goal" title="Meta delivered no leads for this campaign in'
+        + ' this range, so there is nothing for the CRM to have tagged.">'
+        + 'no leads yet</span>'
+      : c.tracking === "off"
+      ? '<span class="goal none" title="Meta delivered leads for this campaign'
+        + ' and none reached the CRM carrying its name — the campaign tag'
+        + ' is almost certainly not set up for it.">not tracking</span>'
+      : c.matchedBy === null
+      ? '<span class="goal none" title="No CRM leads carry this'
+        + ' campaign name, so nothing downstream can be attributed to it.">'
+        + 'no IF match</span>'
+      : c.tracking === "partial"
+      ? '<span class="goal watch" title="Well under half of the leads Meta'
+        + ' reported reached the CRM tagged. Some shortfall is normal —'
+        + ' a repeat form fill resurfaces an existing opportunity rather than'
+        + ' creating a new lead — but this gap is wide enough to check.">'
+        + 'part-tagged</span>'
+      : note ? `<span class="goal watch" title="${K.esc(note)}">≈</span>` : "";
+    const has = c.matchedBy !== null && c.matchedBy !== undefined;
+    const cell = (v) => has ? v : '<span class="muted-cell">—</span>';
+    // Same variant-first treatment as the cards, so a campaign reads the
+    // same in both places and the column stays narrow enough to leave room
+    // for the numbers.
+    return `<tr><td title="${K.esc(c.campaign || "")}">`
+      + `${K.esc(K.adset(c.campaign) || c.campaign || "—")} ${flag}`
+      + `<span class="th-sub">${K.esc(campaignTail(c.campaign))}</span></td>`
+      + `<td>${money0(c.spend)}</td>`
+      + `<td>${K.fmt(c.leads)}</td>`
+      + `<td>${money(c.cpl)}</td>`
+      + `<td>${cell(K.fmt(c.ifLeads))}</td>`
+      + `<td>${cell(K.fmt(c.qualified))}</td>`
+      + `<td>${cell(K.pct(c.qualifyRate))}</td>`
+      + `<td>${cell(money(c.costPerQualified))}</td>`
+      + `<td>${cell(K.fmt(c.offers))}</td>`
+      + `<td>${cell(K.fmt(c.contracts))}</td>`
+      + `<td>${cell(K.pct(c.junkRate))}</td></tr>`;
+  }).join("");
+
+  // The footer adds up the rows above it and nothing else, so the columns
+  // reconcile. It can therefore be smaller than the tiles at the top, which
+  // are account-wide - the gap is what the unmatched block below explains.
+  const t = d.campaignTotals || {};
+  $("campaigns-table").innerHTML =
+    '<table><thead><tr><th>Campaign</th><th>Spend</th><th>Leads<br><span class="th-sub">Meta</span></th>'
+    + '<th>CPL</th><th>Leads<br><span class="th-sub">CRM</span></th><th>Qualified + Contacted</th>'
+    + '<th>Qual. rate</th><th>Cost / qual.</th><th>Offers</th><th>Contracts</th>'
+    + '<th>Junk</th></tr></thead><tbody>' + body
+    + `<tr class="total"><td>These campaigns</td><td>${money0(t.spend)}</td>`
+    + `<td>${K.fmt(t.leads)}</td><td>${money(t.cpl)}</td><td>${K.fmt(t.ifLeads)}</td>`
+    + `<td>${K.fmt(t.qualified)}</td><td>${K.pct(t.qualifyRate)}</td>`
+    + `<td>${money(t.costPerQualified)}</td><td>${K.fmt(t.offers)}</td>`
+    + `<td>${K.fmt(t.contracts)}</td><td>${K.pct(t.junkRate)}</td></tr>`
+    + "</tbody></table>";
+
+  // Leads with no campaign tag at all. Not in the table above, not in the
+  // tiles, and until this block existed not anywhere - which is how the Meta
+  // tab came to show fewer contracts than the Overview with no way to find out
+  // why. Named rather than folded in: if these are Meta leads whose tag broke,
+  // that is a tracking bug worth chasing; if they are organic or referral,
+  // that is worth knowing too.
+  // Which campaigns are not tagging. InvestorFuse configures the tag per
+  // campaign, so this is the list that goes in the ticket - and it is the only
+  // way to identify them, since an untagged lead cannot say where it came from.
+  // The campaign whose leads went missing is the evidence.
+  const off = d.trackingOff || [], part = d.trackingPartial || [];
+  const named = (rows) => rows.map(r =>
+    `<li><b>${K.esc(r.campaign)}</b> — Meta delivered ${K.fmt(r.leads)} lead`
+    + `${r.leads === 1 ? "" : "s"} for ${money0(r.spend)}, `
+    + (r.ifLeads ? `only ${K.fmt(r.ifLeads)} reached the CRM tagged`
+                 : `none reached the CRM with this campaign on it`)
+    + `</li>`).join("");
+  const trackBlock = (!off.length && !part.length) ? "" :
+    `<div class="note" style="margin-top:18px;">`
+    + (off.length
+        ? `<b>Tagging looks switched off for ${off.length} campaign`
+          + `${off.length === 1 ? "" : "s"}.</b> Meta delivered leads and not `
+          + `one arrived in the CRM carrying the campaign name. In GHL the `
+          + `campaign comes from the lead form's attribution, or from the `
+          + `utm_campaign on the ad's link for website visitors — check those `
+          + `for the campaigns listed.`
+          + `<ul style="margin:8px 0 0;padding-left:20px;">${named(off)}</ul>` : "")
+    + (part.length
+        ? `${off.length ? '<div style="margin-top:10px;"></div>' : ""}`
+          + `<b>Worth a look:</b> ${part.length} campaign`
+          + `${part.length === 1 ? " is" : "s are"} tagging some leads and not `
+          + `others. Some shortfall is normal — a seller who fills the form `
+          + `twice is two leads to Meta and one resurfaced opportunity here — `
+          + `so check these before reporting them.`
+          + `<ul style="margin:8px 0 0;padding-left:20px;">${named(part)}</ul>` : "")
+    + `</div>`;
+
+  // Where Meta's lead count went. The unaccounted term is the alarming one:
+  // a submission Meta billed for that never reached the CRM in any form.
+  const rec = d.reconcile || {};
+  const recBlock = !rec.metaLeads ? "" : (() => {
+    const parts = [`<b>${K.fmt(rec.created)}</b> new opportunit`
+      + (rec.created === 1 ? "y" : "ies")];
+    if (rec.returning)
+      parts.push(`<b>${K.fmt(rec.returning)}</b> repeat fill`
+        + (rec.returning === 1 ? "" : "s") + ` on sellers already on file`);
+    const tone = rec.unaccounted ? "banner warn show" : "note";
+    const tail = rec.unaccounted
+      ? ` and <b>${K.fmt(rec.unaccounted)} that never reached the CRM `
+        + `at all</b>. Those are paid leads nobody can call — worth checking `
+        + `the lead-form connection for the campaigns they came from.`
+      : `, which accounts for all of them.`;
+    return `<div class="${tone}" style="margin-top:18px;">Meta counted `
+      + `<b>${K.fmt(rec.metaLeads)}</b> form fill`
+      + `${rec.metaLeads === 1 ? "" : "s"} in this range: `
+      + parts.join(", ") + tail + `</div>`;
+  })();
+
+  const ut = d.untagged;
+  const utBlock = !ut || !ut.leads ? "" :
+    `<div class="note" style="margin-top:18px;"><b>${K.fmt(ut.leads)} lead`
+    + `${ut.leads === 1 ? "" : "s"} in this range carry no campaign tag`
+    + (ut.offers || ut.contracts
+        ? ` — including ${K.fmt(ut.offers)} offer${ut.offers === 1 ? "" : "s"} and `
+          + `${K.fmt(ut.contracts)} under contract` : "")
+    + `.</b> They are counted on the Overview but left out of every cost figure `
+    + `here, because nothing says Meta paid for them. That is why the Overview `
+    + `can show more offers or contracts than this tab for the same dates.</div>`;
+
+  const un = d.unmatched || [];
+  $("unmatched").innerHTML = (!un.length ? "" :
+    '<p class="hint" style="margin:18px 0 8px;">CRM leads whose campaign tag '
+    + 'matched nothing in Meta — either the tag is written differently there, or '
+    + 'those leads came from somewhere else.</p><div class="scroll-x"><table><thead><tr>'
+    + '<th>Campaign tag</th><th>Leads</th><th>Qualified + Contacted</th><th>Offers</th><th>Contracts</th>'
+    + '</tr></thead><tbody>'
+    + un.map(u => `<tr><td>${K.esc(u.campaign || "—")}</td><td>${K.fmt(u.leads)}</td>`
+        + `<td>${K.fmt(u.qualified)}</td><td>${K.fmt(u.offers)}</td>`
+        + `<td>${K.fmt(u.contracts)}</td></tr>`).join("")
+    + "</tbody></table></div>") + recBlock + trackBlock + utBlock;
+}
+
+let adsOpen = false;
+
+function renderAds(d) {
+  const rows = d.ads || [];
+  if (!rows.length) {
+    $("ads").innerHTML = '<p class="hint">No ads delivered in this range.</p>';
+    return;
+  }
+  // "Best ads" that lists every ad is just "ads". Ten is enough to see the
+  // pattern; the rest are one click away for when the question is about a
+  // specific creative rather than which ones are working.
+  const TOP = 10;
+  const shown = adsOpen ? rows : rows.slice(0, TOP);
+  const hidden = rows.length - shown.length;
+  $("ads-hint").textContent = hidden > 0
+    ? `Most leads first, then cheapest per lead. Top ${shown.length} of `
+      + `${d.adCount || rows.length}.`
+    : `Most leads first, then cheapest per lead. All ${rows.length}.`;
+  $("ads-more").innerHTML = (hidden > 0 || adsOpen)
+    ? `<button class="toggle" id="m-ads-toggle">`
+      + (adsOpen ? "Show top 10" : `Show all ${d.adCount || rows.length}`)
+      + `</button>` : "";
+  const more = $("ads-toggle");
+  if (more) more.addEventListener("click", () => {
+    adsOpen = !adsOpen;
+    renderAds(d);
+  });
+  $("ads").innerHTML =
+    '<table><thead><tr><th>Ad</th><th class="cell-l">Campaign</th><th>Spend</th><th>Leads</th>'
+    + '<th>CPL</th><th>CTR</th><th>CPM</th><th>Clicks</th></tr></thead><tbody>'
+    + shown.map(a => `<tr><td>${K.esc(a.ad || "—")}`
+        + (a.adset ? `<div class="th-sub">${K.esc(a.adset)}</div>` : "")
+        + `</td><td class="muted-cell cell-l trunc"`
+        + ` title="${K.esc(a.campaign || "")}">`
+        + `${K.esc(K.adset(a.campaign) || a.campaign || "—")}</td>`
+        + `<td>${money0(a.spend)}</td><td>${K.fmt(a.leads)}</td>`
+        + `<td>${money(a.cpl)}${pill("cpl", a.cpl)}</td>`
+        + `<td>${a.ctr ? a.ctr.toFixed(2) + "%" : "—"}</td>`
+        + `<td>${money(a.cpm)}</td><td>${K.fmt(a.clicks)}</td></tr>`).join("")
+    + "</tbody></table>";
+}
+
+function render(d) {
+  const banner = $("banner");
+  if (d.error) {
+    banner.className = "banner warn show";
+    banner.innerHTML = "Meta would not answer: " + K.esc(d.error)
+      + ' · <a class="plain" href="/api/meta/verify" target="_blank" rel="noopener">check setup</a>';
+    adsSpend("m", null);
+    return;
+  }
+  banner.className = "banner";
+  adsSpend("m", (d.totals || {}).spend);
+  GOALS = d.goals || {};
+  renderTiles(d); renderDelivery(d);
+  renderThumbs(d); renderCampaigns(d); renderAds(d);
+  stamp(d.fetchedAt, d.cacheMinutes);
+  watchCopyCard();
+  // The range changed under it, so whatever is on screen is for the old
+  // dates. Only re-fetch if the card has already been looked at.
+  if (copyState.want) {
+    copyState.data = null;
+    const fresh = copyState.nextFresh;
+    copyState.nextFresh = false;
+    loadCopy(fresh);
+  }
+}
+
+// ---------------------------------------------------------------- copy
+// Its own fetch, deliberately. Five more API calls than the rest of the tab,
+// and most visits never scroll this far, so it starts the first time the card
+// comes into view rather than on every page load.
+const copyState = { kind: "headline", campaign: "", data: null, loading: false,
+                    want: false, nextFresh: false, open: new Set() };
+
+function copyUrl() {
+  const q = [`from=${state.from}`, `to=${state.to}`];
+  if (copyState.campaign) q.push("campaign=" + encodeURIComponent(copyState.campaign));
+  return "/api/meta/copy?" + q.join("&");
+}
+
+async function loadCopy(fresh) {
+  if (copyState.loading) return;
+  copyState.loading = true;
+  if (!copyState.data) {
+    $("copy-body").innerHTML = '<p class="hint">Asking Meta which words earned '
+      + 'the leads…</p>';
+  }
+  try {
+    const res = await fetch(copyUrl() + (fresh ? "&fresh=1" : ""),
+                            { credentials: "same-origin" });
+    if (res.status === 401) { location.href = "/login"; return; }
+    if (res.status === 403) { if (K.onForbidden) K.onForbidden(); return; }
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    copyState.data = await res.json();
+    renderCopy();
+  } catch (err) {
+    $("copy-body").innerHTML = `<p class="hint">Could not load the copy `
+      + `breakdown: ${K.esc(err.message)}</p>`;
+  } finally {
+    copyState.loading = false;
+  }
+}
+
+/** Long primary texts get clamped; headlines almost never need it. */
+const CLAMP_AT = 150;
+
+function copyRow(row, i, minLeads) {
+  const key = row.text;
+  const long = row.text.length > CLAMP_AT;
+  const open = copyState.open.has(key);
+  const tags = [];
+  if (row.source === "variants")
+    tags.push(`<span class="goal" title="Split out of a Dynamic Creative ad by `
+      + `Meta — this is that exact variant's own performance.">variant</span>`);
+  if (row.source === "ads")
+    tags.push(`<span class="goal" title="Pooled from ${row.ads} ad`
+      + `${row.ads === 1 ? "" : "s"} running this exact wording.">`
+      + `${K.fmt(row.ads)} ad${row.ads === 1 ? "" : "s"}</span>`);
+  if (row.source === "both")
+    tags.push(`<span class="goal" title="Running both as a variant inside a `
+      + `Dynamic Creative ad and as the only line in a standalone ad.">`
+      + `variant + ads</span>`);
+  if (row.thin)
+    tags.push(`<span class="goal copy-thin" title="Under ${minLeads} leads. `
+      + `The cost per lead here can swing by a third on one more lead, so it `
+      + `is not yet worth acting on either way.">too thin to call</span>`);
+  else if (i === 0)
+    tags.push('<span class="goal ok">most leads</span>');
+  // The goal verdict, but only on rows with enough leads to mean it. Stamping
+  // "on target" on a $12 CPL earned by two leads is the page asserting
+  // something the data has not earned. It sits with the other tags rather
+  // than under the CPL number, which is only ever as wide as "$34".
+  if (!row.thin && row.cpl !== null) tags.push(pill("cpl", row.cpl).trim());
+  if (row.campaigns && row.campaigns.length > 1)
+    tags.push(`<span class="goal" title="${K.esc(row.campaigns.join(" · "))}">`
+      + `${row.campaigns.length} campaigns</span>`);
+
+  return `<div class="copy-row${open ? " open" : ""}${row.thin ? " thin" : ""}`
+    + `${i === 0 && !row.thin ? " win" : ""}" data-key="${K.esc(key)}">
+      <div class="copy-rank">${i + 1}</div>
+      <div>
+        <div class="copy-text${long ? " copy-long" : ""}">${K.esc(row.text)}</div>`
+    + (long ? `<button class="copy-more" data-more="${K.esc(key)}">`
+        + (open ? "Show less" : "Show all") + `</button>` : "")
+    + `<div class="copy-meta">${tags.join(" ")}</div>
+      </div>
+      <div class="copy-nums">
+        <div class="copy-num"><div class="v">${K.fmt(row.leads)}</div>
+          <div class="k">Leads</div></div>
+        <div class="copy-num cpl"><div class="v">${money0(row.cpl)}</div>
+          <div class="k">CPL</div></div>
+        <div class="copy-num"><div class="v">${money0(row.spend)}</div>
+          <div class="k">Spend</div></div>
+      </div>
+    </div>`;
+}
+
+function renderCopy() {
+  const d = copyState.data;
+  if (!d) return;
+  if (d.error) {
+    $("copy-body").innerHTML = `<p class="hint">Meta would not answer: `
+      + `${K.esc(d.error)}</p>`;
+    $("copy-note").hidden = true;
+    return;
+  }
+
+  // The campaign filter, filled once. Rebuilding it on every render would
+  // reset the selection mid-use.
+  const sel = $("copy-campaign");
+  if (!sel.dataset.filled && (d.campaigns || []).length) {
+    sel.innerHTML = '<option value="">All campaigns</option>'
+      + d.campaigns.map(c => `<option value="${K.esc(c)}">${K.esc(c)}</option>`).join("");
+    sel.dataset.filled = "1";
+    sel.value = copyState.campaign;
+  }
+
+  document.querySelectorAll("#m-copy-kinds button").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.kind === copyState.kind)));
+
+  const rows = d[copyState.kind] || [];
+  if (!rows.length) {
+    $("copy-body").innerHTML = '<p class="hint">Nothing to rank here — no '
+      + 'delivery for this element in this range.</p>';
+  } else {
+    $("copy-body").innerHTML = rows.map(
+      (r, i) => copyRow(r, i, d.minLeads)).join("");
+    // Measured, not guessed: the button is only useful if the clamp is
+    // really cutting the text off at this width.
+    $("copy-body").querySelectorAll(".copy-row").forEach(rowEl => {
+      const text = rowEl.querySelector(".copy-long");
+      const btn = rowEl.querySelector("[data-more]");
+      if (text && btn && !rowEl.classList.contains("open")
+          && text.scrollHeight <= text.clientHeight + 2) {
+        btn.remove();
+        text.classList.remove("copy-long");
+      }
+    });
+    $("copy-body").querySelectorAll("[data-more]").forEach(btn =>
+      btn.addEventListener("click", () => {
+        const key = btn.dataset.more;
+        if (copyState.open.has(key)) copyState.open.delete(key);
+        else copyState.open.add(key);
+        renderCopy();
+      }));
+  }
+
+  // What the ranking is and isn't built from. Without this the honest answer
+  // to "why isn't my new static in here" is invisible, and the number that
+  // matters most — how much of the account this actually covers — is the one
+  // nobody thinks to ask for.
+  const c = d.coverage || {}, notes = [];
+  const counted = rows.reduce((n, r) => n + r.leads, 0);
+  if (rows.length)
+    notes.push(`${K.fmt(Math.round(counted))} leads across `
+      + `${rows.length} variant${rows.length === 1 ? "" : "s"}`);
+  if (c.dynamicAds)
+    notes.push(`${K.fmt(c.dynamicAds)} of ${K.fmt(c.adsSeen)} ads shuffle `
+      + `variants; the rest are pooled by their wording`);
+  else if (c.adsSeen)
+    notes.push(`none of your ${K.fmt(c.adsSeen)} ads run shuffled variants, so `
+      + `every row here is one ad's own copy`);
+  if (c.dynamicWithoutVariants)
+    notes.push(`<b>${K.fmt(c.dynamicWithoutVariants)} shuffled ad`
+      + `${c.dynamicWithoutVariants === 1 ? " is" : "s are"} missing from this`
+      + `</b> — Meta returned no variant rows for `
+      + `${c.dynamicWithoutVariants === 1 ? "it" : "them"}, so `
+      + `${c.dynamicWithoutVariants === 1 ? "its" : "their"} leads are not counted here`);
+  notes.push(`under ${d.minLeads} leads a row is flagged rather than ranked on cost`);
+  $("copy-note").hidden = false;
+  $("copy-note").innerHTML = notes.join(" · ") + ".";
+}
+
+function wireCopy() {
+  document.querySelectorAll("#m-copy-kinds button").forEach(btn =>
+    btn.addEventListener("click", () => {
+      copyState.kind = btn.dataset.kind;
+      copyState.open.clear();
+      renderCopy();
+    }));
+  $("copy-campaign").addEventListener("change", (e) => {
+    copyState.campaign = e.target.value;
+    copyState.open.clear();
+    loadCopy();
+  });
+}
+
+/**
+ * Start loading the copy card when it is first scrolled to.
+ *
+ * Called after the first render, not from wireCopy: at wiring time the page
+ * below the gate is still empty, so the card sits near the top of a blank
+ * document, counts as on-screen, and fires immediately - which spends the
+ * five extra API calls on every single visit, the exact thing a separate
+ * endpoint exists to avoid.
+ */
+let copyWatched = false;
+function watchCopyCard() {
+  if (copyWatched) return;
+  copyWatched = true;
+  const start = () => { copyState.want = true; loadCopy(); };
+  if (!("IntersectionObserver" in window)) { start(); return; }
+  const io = new IntersectionObserver((entries) => {
+    if (entries.some(e => e.isIntersecting)) { io.disconnect(); start(); }
+  }, { rootMargin: "200px" });
+  // One frame later, so the observer measures a laid-out page rather than the
+  // empty one it was wired against.
+  requestAnimationFrame(() => requestAnimationFrame(
+    () => io.observe($("copy-card"))));
+}
+
+/**
+ * When Meta was actually asked - not "live".
+ *
+ * Meta's own reporting lags by minutes to hours, so nothing here is live in
+ * any useful sense and saying so would be a small lie that costs trust the
+ * first time someone compares a number against Ads Manager. A clock time is
+ * both honest and more useful: it answers "is this from before or after I
+ * changed that budget".
+ */
+function stamp(iso, minutes) {
+  const badge = $("freshness");
+  if (!badge) return;
+  if (!iso) { badge.innerHTML = '<span class="dot stale"></span>Meta Ads'; return; }
+  const at = new Date(iso);
+  const clock = isNaN(at) ? iso
+    : at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  badge.innerHTML = '<span class="dot ok"></span>Meta · as of ' + K.esc(clock);
+  badge.title = `Pulled from Meta at ${clock}. Reused for ${minutes || 10} `
+    + "minutes; Refresh forces a new pull.";
+}
+
+const reload = (fresh) => K.load(
+  `/api/meta?from=${state.from}&to=${state.to}${fresh ? "&fresh=1" : ""}`, render);
+
+
+return {
+  async reload(fresh) {
+    copyState.nextFresh = !!fresh;
+    try { await reload(fresh); } finally { copyState.nextFresh = false; }
+  },
+  wire() { wireCopy(); },
+};
+})();
+</script>
+
+<script>
+/* ------------------------------------------------------------- wiring */
+let STATUS = null, wired = false;
+
+// A loading card per column while its network is being asked. Counted, so
+// two quick range changes don't hide it while the second load is still out.
+const pending = { g: 0, m: 0 };
+async function withLoading(col, work) {
+  pending[col] += 1;
+  K.$(col + "-loading").hidden = false;
+  K.$(col + "-live").classList.add("is-loading");
+  try { await work; }
+  catch (e) { /* each column reports its own errors in its banner */ }
+  finally {
+    pending[col] -= 1;
+    if (!pending[col]) {
+      K.$(col + "-loading").hidden = true;
+      K.$(col + "-live").classList.remove("is-loading");
+    }
+  }
+}
+
+function reloadAll(fresh) {
+  // New range: every overview number is pending again until it lands.
+  OV.g = {}; OV.m = {}; renderOV("g"); renderOV("m");
+  loadLeads();
+  if (STATUS.google) withLoading("g", G.reload());
+  if (STATUS.meta) withLoading("m", M.reload(fresh));
+}
+
+function goLive() {
+  K.$("gate").hidden = true; K.$("locked-note").hidden = true;
+  K.$("live").hidden = false;
+  K.$("g-live").hidden = !STATUS.google; K.$("g-off").hidden = STATUS.google;
+  K.$("m-live").hidden = !STATUS.meta;   K.$("m-off").hidden = STATUS.meta;
+  if (wired) { reloadAll(); return; }
+  wired = true;
+  K.wireRange(state, () => reloadAll(false), "30");
+  K.wireTableToggles();
+  // Refresh pulls the CRM again, then asks both networks again, skipping
+  // Meta's ten-minute cache.
+  K.wireRefresh(() => reloadAll(true));
+  if (STATUS.google) G.wire();
+  if (STATUS.meta) M.wire();
+  reloadAll();
+  setInterval(() => reloadAll(false), 10 * 60 * 1000);
+}
+
+K.$("gate-form").addEventListener("submit", async (evt) => {
+  evt.preventDefault();
+  const err = K.$("pin-err");
+  err.textContent = ""; K.$("pin-go").disabled = true;
+  try {
+    const body = new FormData();
+    body.append("pin", K.$("pin").value.trim());
+    const res = await fetch("/api/meta/unlock", { method: "POST", body, credentials: "same-origin" });
+    if (res.ok) { K.$("pin").value = ""; goLive(); return; }
+    const data = await res.json().catch(() => ({}));
+    err.textContent = res.status === 429 ? "Too many tries. Wait 15 minutes."
+      : (data.error || "Wrong PIN")
+        + (data.attemptsLeft !== undefined ? ` · ${data.attemptsLeft} left` : "");
+    K.$("pin").value = ""; K.$("pin").focus();
+  } catch (e) { err.textContent = "Could not reach the server."; }
+  finally { K.$("pin-go").disabled = false; }
+});
+
+K.$("pin").addEventListener("input", () => {
+  const el = K.$("pin");
+  el.value = el.value.replace(/\D/g, "").slice(0, 4);
+  if (el.value.length === 4) K.$("gate-form").requestSubmit();
+});
+
+// The PIN cookie lasts 12 hours, so it usually expires with the page open.
+K.onForbidden = () => {
+  K.$("live").hidden = true; K.$("gate").hidden = false;
+  const err = K.$("pin-err");
+  if (err) err.textContent = "That PIN expired. Enter it again.";
+  K.$("pin").focus();
+  return true;
+};
+
+(async () => {
+  try {
+    const res = await fetch("/api/ads/status", { credentials: "same-origin" });
+    if (res.status === 401) { location.href = "/login"; return; }
+    STATUS = await res.json();
+    if (!STATUS.pinConfigured) { K.$("locked-note").hidden = false; return; }
+    if (STATUS.unlocked) { goLive(); return; }
+    K.$("gate").hidden = false;
+    K.$("pin").focus();
+  } catch (e) {
+    K.$("locked-note").hidden = false;
+  }
+})();
+</script>
+</body>
+</html>
