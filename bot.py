@@ -40,8 +40,14 @@ DISPO_ROLE_ID       = 1477051979317510246
 CALENDAR_CHANNEL_ID = 1489343322798559242
 EXEMPT_USER_ID      = 622805991242596362
 NUDGE_INTERVAL_HOURS = 24
-STATE_FILE    = "channel_state.json"
-CALENDAR_FILE = "calendar_state.json"
+# Where the state files live. Point DATA_DIR at a Railway volume (e.g. /data)
+# and the calendar, reminder settings and half-finished deal forms survive
+# redeploys - no more /recovercalendar. Unset, they sit next to the code and
+# are wiped on every deploy, as before.
+DATA_DIR      = os.environ.get("DATA_DIR", ".")
+os.makedirs(DATA_DIR, exist_ok=True)
+STATE_FILE    = os.path.join(DATA_DIR, "channel_state.json")
+CALENDAR_FILE = os.path.join(DATA_DIR, "calendar_state.json")
 
 FARAH_USER_ID  = 1186039817713234123
 CARLOS_USER_ID = 1089701097867853865
@@ -85,8 +91,12 @@ def load_json(path):
     return {}
 
 def save_json(path, data):
-    with open(path, "w") as f:
+    # Write to a temp file and swap it in, so a crash mid-write can't leave a
+    # half-written file that loses every contract date on the next start.
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(data, f)
+    os.replace(tmp, path)
 
 channel_state  = load_json(STATE_FILE)
 calendar_state = load_json(CALENDAR_FILE)
@@ -684,6 +694,11 @@ async def _finalize_deal(interaction: discord.Interaction, channel_id: str):
         )
         return
 
+    # Remember the deal is recorded BEFORE moving the channel, so the move
+    # doesn't trigger the "record this deal" prompt for a deal just recorded.
+    channel_state.setdefault("_recorded", {})[channel_id] = time.time()
+    save_json(STATE_FILE, channel_state)
+
     # Move channel to Closed Deals
     guild    = interaction.guild
     channel  = guild.get_channel(int(channel_id))
@@ -727,6 +742,50 @@ class _OpenStep1View(View):
         await interaction.response.send_modal(
             DealStep1Modal(self._prefill, self._cid, self._name, self._recorder)
         )
+
+
+# ── "Record this deal" prompt (channel moved into Closed Deals by hand) ───────
+class RecordDealView(View):
+    """Posted when a channel lands in Closed Deals without going through /close.
+    Persistent, so the button still works after a redeploy."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="📋 Record closed deal", style=discord.ButtonStyle.success,
+                       custom_id="record_deal")
+    async def record(self, interaction: discord.Interaction, button: Button):
+        channel = interaction.channel
+        cid = str(channel.id)
+        if cid in channel_state.get("_recorded", {}):
+            await interaction.response.send_message(
+                "✅ This deal is already recorded. Use `/close` to send a correction.", ephemeral=True)
+            return
+        # The address was looked up when the prompt was posted - a modal has to
+        # open within 3 seconds, too soon to scan the channel history.
+        prefill = channel_state.get("_prompt_address", {}).get(cid, "")
+        await interaction.response.send_modal(
+            DealStep1Modal(prefill, cid, channel.name, interaction.user.display_name))
+
+
+@client.event
+async def on_guild_channel_update(before, after):
+    if not isinstance(after, discord.TextChannel):
+        return
+    if before.category_id == after.category_id or after.category_id != CATEGORIES["closed"]:
+        return
+    cid = str(after.id)
+    if cid in channel_state.get("_recorded", {}):
+        return   # moved by /close after the deal was sent
+    address = await find_address_in_channel(after)
+    channel_state.setdefault("_prompt_address", {})[cid] = address
+    save_json(STATE_FILE, channel_state)
+    embed = discord.Embed(
+        title="Closed deal — record the numbers",
+        description=("This channel was moved to Closed Deals. Record the assignment fee "
+                     "and splits so they show up on the Revenue dashboard."),
+        color=0x2ECC71,
+    )
+    await after.send(embed=embed, view=RecordDealView())
 
 
 # ── /close command ────────────────────────────────────────────────────────────
@@ -933,8 +992,12 @@ async def on_ready():
     client.add_view(LeadStatusView())
     client.add_view(ReminderSettingsView())
     client.add_view(CalendarManagerViewPersistent())
-    nudge_check.start()
-    refresh_calendar.start()
+    client.add_view(RecordDealView())
+    # on_ready fires again after every reconnect; starting a running loop raises.
+    if not nudge_check.is_running():
+        nudge_check.start()
+    if not refresh_calendar.is_running():
+        refresh_calendar.start()
     print(f"✅ Logged in as {client.user}")
 
 
