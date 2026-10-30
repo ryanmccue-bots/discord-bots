@@ -1,11 +1,12 @@
 import discord
 from discord import app_commands
-from discord.ui import View, Button, Modal, TextInput, Select
+from discord.ui import View, Button, Modal, TextInput
 from discord.ext import tasks
 import os
 import json
 import time
 import re
+import asyncio
 import aiohttp
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
@@ -55,15 +56,6 @@ CARLOS_USER_ID = 1089701097867853865
 DEAL_WEBHOOK_TOKEN = os.environ.get("DEAL_WEBHOOK_TOKEN", "")
 DEAL_WEBHOOK_URL   = f"https://favoritehomebuyerkpi.up.railway.app/hooks/deal/{DEAL_WEBHOOK_TOKEN}"
 
-# Roster for deal form dropdowns
-ROSTER = [
-    {"label": "Carlos",  "email": "carlos@favoritehomebuyer.com"},
-    {"label": "Trevor",  "email": "tdarealestate@gmail.com"},
-    {"label": "Joy",     "email": "joy@favoritehomebuyer.com"},
-    {"label": "Farah",   "email": "Farah"},
-    {"label": "Joe",     "email": "Joe Monteverde"},
-    {"label": "None",    "email": None},
-]
 
 FARAH_PERMISSIONS = discord.PermissionOverwrite(
     view_channel=True,
@@ -358,463 +350,149 @@ async def slash_addfarah(interaction: discord.Interaction):
     await interaction.followup.send(f"✅ Added Farah to **{added}** channels.", ephemeral=True)
 
 
-# ── Deal form helpers ────────────────────────────────────────────────────────
+# ── Closed deals → Revenue dashboard ─────────────────────────────────────────
+# The dashboard's "Add closed deal" form replaced the old 3-step Discord form.
+# Discord just tells the dashboard a deal closed (address + channel, no
+# numbers); the fee and splits are filled in on the Revenue tab. Sending the
+# same channel twice is harmless - the dashboard never overwrites a deal that
+# already has numbers.
+REVENUE_URL = "https://favoritehomebuyerkpi.up.railway.app/revenue"
 
-def roster_options(include_none=True):
-    """Build Select options from ROSTER."""
-    opts = []
-    for r in ROSTER:
-        if r["email"] is None and not include_none:
-            continue
-        opts.append(discord.SelectOption(label=r["label"], value=r["label"]))
-    return opts
+_ADDRESS_RE = re.compile(r"address of the property[^\n]*\n+\s*(.+)", re.IGNORECASE)
 
-def roster_email(label: str):
-    """Return email/name to send in webhook for a given roster label."""
-    for r in ROSTER:
-        if r["label"] == label:
-            return r["email"]
-    return label   # unknown — send as-is so dashboard can flag it
+
+def _address_from_text(text: str) -> str:
+    m = _ADDRESS_RE.search(text or "")
+    return m.group(1).strip().strip("*_` ").strip() if m else ""
+
 
 async def find_address_in_channel(channel) -> str:
-    """Scan channel history for the Tickety bot's address field."""
-    pattern = re.compile(
-        r"1\.\s*Address of the Property\s*\n(.+)",
-        re.IGNORECASE
-    )
-    async for msg in channel.history(limit=200, oldest_first=True):
-        m = pattern.search(msg.content)
-        if m:
-            return m.group(1).strip()
-    return ""
+    """The property address from Tickety's opening message (text or embed),
+    falling back to the channel name ("1234-briarwood-dr" -> "1234 Briarwood Dr")."""
+    try:
+        async for msg in channel.history(limit=50, oldest_first=True):
+            found = _address_from_text(msg.content)
+            if not found:
+                for embed in msg.embeds:
+                    parts = [embed.description or ""] + [f"{f.name}\n{f.value}" for f in embed.fields]
+                    found = _address_from_text("\n".join(parts))
+                    if found:
+                        break
+            if found:
+                return found[:300]
+    except Exception:
+        pass
+    return " ".join(w.capitalize() for w in channel.name.replace("_", "-").split("-") if w)
 
-async def post_deal_webhook(payload: dict) -> dict | None:
-    """POST payload to the deal webhook. Returns parsed JSON or None on error."""
+
+async def post_deal_webhook(payload: dict) -> dict:
+    """POST to the dashboard. {"status": http status, "body": parsed JSON}."""
+    if not DEAL_WEBHOOK_TOKEN:
+        return {"status": 0, "body": {"error": "DEAL_WEBHOOK_TOKEN is not set"}}
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(DEAL_WEBHOOK_URL, json=payload) as resp:
+            async with session.post(DEAL_WEBHOOK_URL, json=payload,
+                                    timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 return {"status": resp.status, "body": await resp.json(content_type=None)}
     except Exception as e:
         return {"status": 0, "body": {"error": str(e)}}
 
 
-# ── Deal form — step 1: address + assignment fee ─────────────────────────────
-class DealStep1Modal(Modal, title="Close Deal — Step 1 of 3"):
-    address = TextInput(
-        label="Property Address",
-        placeholder="Auto-filled from Tickety if blank — edit if wrong",
-        max_length=300,
-        required=True,
-    )
-    assignment_fee = TextInput(
-        label="Assignment Fee ($)",
-        placeholder="e.g. 18500",
-        max_length=20,
-        required=True,
-    )
-    notes = TextInput(
-        label="Notes (optional)",
-        style=discord.TextStyle.short,
-        max_length=300,
-        required=False,
-    )
-    backfill_date = TextInput(
-        label="Close Date (leave blank = today)",
-        placeholder="MM/DD/YYYY — only needed for backfilling old deals",
-        max_length=10,
-        required=False,
-    )
-
-    def __init__(self, prefill_address: str, channel_id: str, channel_name: str, recorder: str):
-        super().__init__()
-        self.address.default = prefill_address
-        self._channel_id   = channel_id
-        self._channel_name = channel_name
-        self._recorder     = recorder
-
-    async def on_submit(self, interaction: discord.Interaction):
-        # Store partial deal in channel state for step 2
-        deal_draft = {
-            "deal_id":        self._channel_id,
-            "address":        self.address.value.strip(),
-            "assignment_fee": self.assignment_fee.value.strip(),
-            "notes":          self.notes.value.strip(),
-            "backfill_date":  self.backfill_date.value.strip(),
-            "channel_name":   self._channel_name,
-            "recorded_by":    self._recorder,
-            "acquisitions":   [],
-            "disposition":    None,
-            "lead_manager":   None,
-        }
-        channel_state.setdefault("_deal_drafts", {})[self._channel_id] = deal_draft
-        save_json(STATE_FILE, channel_state)
-
-        await interaction.response.send_message(
-            "**Step 2 of 3 — Acquisition Agent(s)**\nWho were the acquisition agent(s) on this deal? "
-            "Select all that apply, then click **Next**.",
-            view=DealStep2View(self._channel_id),
-            ephemeral=True,
-        )
+def _closed_day(channel) -> str:
+    """When a deal channel went quiet: its last message, else when it was made.
+    Used for back-filling channels that were closed before this existed."""
+    when = channel.created_at
+    if channel.last_message_id:
+        when = discord.utils.snowflake_time(channel.last_message_id)
+    return when.astimezone(TIMEZONE).date().isoformat()
 
 
-# ── Deal form — step 2: acquisition agent(s) ─────────────────────────────────
-class AcqAgentSelect(Select):
-    def __init__(self):
-        super().__init__(
-            placeholder="Select acquisition agent(s)…",
-            min_values=0,
-            max_values=len(ROSTER) - 1,  # exclude None
-            options=roster_options(include_none=False),
-            custom_id="acq_agent_select",
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-
-class DealStep2View(View):
-    def __init__(self, channel_id: str):
-        super().__init__(timeout=300)
-        self._channel_id = channel_id
-        self.acq_select = AcqAgentSelect()
-        self.add_item(self.acq_select)
-
-    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.primary, row=1)
-    async def next_btn(self, interaction: discord.Interaction, button: Button):
-        selected = self.acq_select.values
-        draft = channel_state.get("_deal_drafts", {}).get(self._channel_id)
-        if draft is None:
-            await interaction.response.send_message("❗ Deal draft lost — please run /close again.", ephemeral=True)
-            return
-        draft["_acq_agents"] = selected  # list of labels; commissions collected in modal
-        channel_state.setdefault("_deal_drafts", {})[self._channel_id] = draft
-        save_json(STATE_FILE, channel_state)
-
-        if selected:
-            # Ask commissions for each agent via a modal
-            await interaction.response.send_modal(AcqCommissionsModal(self._channel_id, selected))
-        else:
-            # No acquisition agents — jump to step 3
-            await interaction.response.send_message(
-                "**Step 3 of 3 — Disposition & Lead Manager**",
-                view=DealStep3View(self._channel_id),
-                ephemeral=True,
-            )
-
-
-class AcqCommissionsModal(Modal):
-    def __init__(self, channel_id: str, agents: list[str]):
-        super().__init__(title="Acquisition Commissions")
-        self._channel_id = channel_id
-        self._agents = agents
-        for agent in agents[:5]:  # Modal max 5 inputs
-            self.add_item(TextInput(
-                label=f"{agent} — Commission ($)",
-                placeholder="e.g. 2000",
-                max_length=20,
-                required=True,
-                custom_id=f"acq_{agent}",
-            ))
-
-    async def on_submit(self, interaction: discord.Interaction):
-        draft = channel_state.get("_deal_drafts", {}).get(self._channel_id)
-        if draft is None:
-            await interaction.response.send_message("❗ Deal draft lost — please run /close again.", ephemeral=True)
-            return
-
-        acquisitions = []
-        for item in self.children:
-            agent_label = item.label.split(" — ")[0]
-            acquisitions.append({
-                "person":     roster_email(agent_label),
-                "commission": item.value.strip(),
-            })
-        draft["acquisitions"] = acquisitions
-        channel_state["_deal_drafts"][self._channel_id] = draft
-        save_json(STATE_FILE, channel_state)
-
-        await interaction.response.send_message(
-            "**Step 3 of 3 — Disposition & Lead Manager**",
-            view=DealStep3View(self._channel_id),
-            ephemeral=True,
-        )
-
-
-# ── Deal form — step 3: dispo agent + lead manager ───────────────────────────
-class DispoAgentSelect(Select):
-    def __init__(self):
-        super().__init__(
-            placeholder="Disposition agent (or None)…",
-            min_values=1,
-            max_values=1,
-            options=roster_options(include_none=True),
-            custom_id="dispo_agent_select",
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-
-class LeadManagerSelect(Select):
-    def __init__(self):
-        super().__init__(
-            placeholder="Lead manager (or None)…",
-            min_values=1,
-            max_values=1,
-            options=roster_options(include_none=True),
-            custom_id="lead_manager_select",
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-
-class DealStep3View(View):
-    def __init__(self, channel_id: str):
-        super().__init__(timeout=300)
-        self._channel_id = channel_id
-        self.dispo_select = DispoAgentSelect()
-        self.lm_select    = LeadManagerSelect()
-        self.add_item(self.dispo_select)
-        self.add_item(self.lm_select)
-
-    @discord.ui.button(label="Submit Deal ✅", style=discord.ButtonStyle.success, row=2)
-    async def submit_btn(self, interaction: discord.Interaction, button: Button):
-        dispo_label = self.dispo_select.values[0] if self.dispo_select.values else "None"
-        lm_label    = self.lm_select.values[0]    if self.lm_select.values    else "None"
-
-        if dispo_label in ("None", ""):
-            await interaction.response.send_modal(
-                DealCommissionsModal(self._channel_id, dispo_label, lm_label, need_dispo_commission=False)
-            )
-        else:
-            await interaction.response.send_modal(
-                DealCommissionsModal(self._channel_id, dispo_label, lm_label, need_dispo_commission=True)
-            )
-
-
-class DealCommissionsModal(Modal):
-    def __init__(self, channel_id: str, dispo_label: str, lm_label: str, need_dispo_commission: bool):
-        super().__init__(title="Commissions & Bonus")
-        self._channel_id          = channel_id
-        self._dispo_label         = dispo_label
-        self._lm_label            = lm_label
-        self._need_dispo_commission = need_dispo_commission
-
-        if need_dispo_commission:
-            self.add_item(TextInput(
-                label=f"{dispo_label} — Dispo Commission ($)",
-                placeholder="e.g. 1500",
-                max_length=20,
-                required=True,
-                custom_id="dispo_commission",
-            ))
-
-        if lm_label not in ("None", ""):
-            self.add_item(TextInput(
-                label=f"{lm_label} — Lead Manager Bonus ($)",
-                placeholder="e.g. 500",
-                max_length=20,
-                required=True,
-                custom_id="lm_bonus",
-            ))
-
-    async def on_submit(self, interaction: discord.Interaction):
-        draft = channel_state.get("_deal_drafts", {}).get(self._channel_id)
-        if draft is None:
-            await interaction.response.send_message("❗ Deal draft lost — please run /close again.", ephemeral=True)
-            return
-
-        # Extract submitted values by custom_id
-        values = {item.custom_id: item.value.strip() for item in self.children}
-
-        dispo_commission = values.get("dispo_commission", "0")
-        lm_bonus         = values.get("lm_bonus", "0")
-
-        if self._dispo_label not in ("None", ""):
-            draft["disposition"] = {
-                "person":     roster_email(self._dispo_label),
-                "commission": dispo_commission,
-            }
-
-        if self._lm_label not in ("None", ""):
-            draft["lead_manager"] = {
-                "person": roster_email(self._lm_label),
-                "bonus":  lm_bonus,
-            }
-
-        channel_state["_deal_drafts"][self._channel_id] = draft
-        save_json(STATE_FILE, channel_state)
-
-        await interaction.response.defer(ephemeral=True)
-        await _finalize_deal(interaction, self._channel_id)
-
-
-async def _finalize_deal(interaction: discord.Interaction, channel_id: str):
-    """Build payload, POST to webhook, move channel, clean up."""
-    draft = channel_state.get("_deal_drafts", {}).pop(channel_id, None)
-    if draft is None:
-        await interaction.followup.send("❗ Deal draft lost — please run /close again.", ephemeral=True)
-        return
-
-    # Build closed_on date
-    backfill = draft.get("backfill_date", "").strip()
-    if backfill:
-        parsed_close = parse_date(backfill)
-        closed_on = parsed_close.strftime("%Y-%m-%d") if parsed_close else None
-    else:
-        closed_on = None   # webhook defaults to today
-
-    payload = {
-        "deal_id":        channel_id,
-        "address":        draft["address"],
-        "assignment_fee": draft["assignment_fee"],
-        "acquisitions":   draft.get("acquisitions", []),
-        "channel_name":   draft["channel_name"],
-        "recorded_by":    draft["recorded_by"],
-        "notes":          draft.get("notes", ""),
-    }
-    if draft.get("disposition"):
-        payload["disposition"] = draft["disposition"]
-    if draft.get("lead_manager"):
-        payload["lead_manager"] = draft["lead_manager"]
-    if closed_on:
-        payload["closed_on"] = closed_on
-
-    # POST to webhook
+async def send_to_revenue(channel, closed_on: str | None = None) -> dict:
+    """Tell the dashboard this channel's deal closed. No numbers."""
+    address = await find_address_in_channel(channel)
+    payload = {"deal_id": str(channel.id), "address": address,
+               "channel_name": channel.name, "pending": True,
+               "closed_on": closed_on or today_local().isoformat()}
     result = await post_deal_webhook(payload)
-    status = result["status"] if result else 0
-    body   = result["body"]   if result else {}
+    if result["status"] in (200, 201):
+        channel_state.setdefault("_sent", {})[str(channel.id)] = time.time()
+        save_json(STATE_FILE, channel_state)
+    return result
 
-    if status not in (200, 201):
-        await interaction.followup.send(
-            f"⚠️ Deal form submitted but webhook returned **{status}**: `{body}`. "
-            "The channel was NOT moved. Fix the issue and run `/close` again.",
-            ephemeral=True,
-        )
-        return
 
-    # Remember the deal is recorded BEFORE moving the channel, so the move
-    # doesn't trigger the "record this deal" prompt for a deal just recorded.
-    channel_state.setdefault("_recorded", {})[channel_id] = time.time()
-    save_json(STATE_FILE, channel_state)
-
-    # Move channel to Closed Deals
-    guild    = interaction.guild
-    channel  = guild.get_channel(int(channel_id))
-    category = guild.get_channel(CATEGORIES["closed"])
-    if channel and category:
-        await channel.edit(category=category)
-
-    # Remove from calendar if present
+def _drop_from_calendar(channel_id: str) -> bool:
     if channel_id in calendar_state.get("contracts", {}):
         del calendar_state["contracts"][channel_id]
         save_json(CALENDAR_FILE, calendar_state)
-        await update_calendar_message()
-
-    save_json(STATE_FILE, channel_state)
-
-    # Build success message
-    unresolved = body.get("unresolved", [])
-    msg_lines = [f"🎉 **Deal closed!** Recorded by {interaction.user.mention}"]
-    if unresolved:
-        msg_lines.append(
-            f"⚠️ **Heads up — these names couldn't be matched in the dashboard:** "
-            f"{', '.join(unresolved)}. Ping Ryan to fix attribution."
-        )
-
-    if channel:
-        await channel.send("\n".join(msg_lines))
-    await interaction.followup.send("✅ Deal submitted and channel moved to Closed Deals.", ephemeral=True)
-
-
-class _OpenStep1View(View):
-    """Ephemeral button that opens the Step 1 modal (needed because modals can't follow a defer)."""
-    def __init__(self, prefill_address: str, channel_id: str, channel_name: str, recorder: str):
-        super().__init__(timeout=300)
-        self._prefill  = prefill_address
-        self._cid      = channel_id
-        self._name     = channel_name
-        self._recorder = recorder
-
-    @discord.ui.button(label="📋 Open Deal Form", style=discord.ButtonStyle.primary)
-    async def open_form(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(
-            DealStep1Modal(self._prefill, self._cid, self._name, self._recorder)
-        )
-
-
-# ── "Record this deal" prompt (channel moved into Closed Deals by hand) ───────
-class RecordDealView(View):
-    """Posted when a channel lands in Closed Deals without going through /close.
-    Persistent, so the button still works after a redeploy."""
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="📋 Record closed deal", style=discord.ButtonStyle.success,
-                       custom_id="record_deal")
-    async def record(self, interaction: discord.Interaction, button: Button):
-        channel = interaction.channel
-        cid = str(channel.id)
-        if cid in channel_state.get("_recorded", {}):
-            await interaction.response.send_message(
-                "✅ This deal is already recorded. Use `/close` to send a correction.", ephemeral=True)
-            return
-        # The address was looked up when the prompt was posted - a modal has to
-        # open within 3 seconds, too soon to scan the channel history.
-        prefill = channel_state.get("_prompt_address", {}).get(cid, "")
-        await interaction.response.send_modal(
-            DealStep1Modal(prefill, cid, channel.name, interaction.user.display_name))
+        return True
+    return False
 
 
 @client.event
 async def on_guild_channel_update(before, after):
+    """A channel dragged into Closed Deals gets the same treatment as /close."""
     if not isinstance(after, discord.TextChannel):
         return
     if before.category_id == after.category_id or after.category_id != CATEGORIES["closed"]:
         return
-    cid = str(after.id)
-    if cid in channel_state.get("_recorded", {}):
-        return   # moved by /close after the deal was sent
-    address = await find_address_in_channel(after)
-    channel_state.setdefault("_prompt_address", {})[cid] = address
-    save_json(STATE_FILE, channel_state)
-    embed = discord.Embed(
-        title="Closed deal — record the numbers",
-        description=("This channel was moved to Closed Deals. Record the assignment fee "
-                     "and splits so they show up on the Revenue dashboard."),
-        color=0x2ECC71,
-    )
-    await after.send(embed=embed, view=RecordDealView())
+    if str(after.id) in channel_state.get("_sent", {}):
+        return   # /close already sent it
+    result = await send_to_revenue(after)
+    if _drop_from_calendar(str(after.id)):
+        await update_calendar_message()
+    if result["status"] in (200, 201):
+        await after.send(f"📋 Added to the Revenue dashboard. Fill in the fee and splits there: {REVENUE_URL}")
 
 
 # ── /close command ────────────────────────────────────────────────────────────
-@client.tree.command(name="close", description="Close this deal — collect details and move channel to Closed Deals")
+@client.tree.command(name="close", description="Close this deal: add it to the Revenue dashboard and move it to Closed Deals")
 async def slash_close(interaction: discord.Interaction):
     channel = interaction.channel
-    cid     = str(channel.id)
-
-    # Check Closed Deals category exists
-    if interaction.guild.get_channel(CATEGORIES["closed"]) is None:
+    category = interaction.guild.get_channel(CATEGORIES["closed"])
+    if category is None:
         await interaction.response.send_message("❗ Closed Deals category not found.", ephemeral=True)
         return
+    await interaction.response.defer()
+    result = await send_to_revenue(channel)
+    if result["status"] not in (200, 201):
+        await interaction.followup.send(
+            f"⚠️ Couldn't reach the dashboard ({result['status']}: {result['body']}). "
+            "The channel was NOT moved. Try `/close` again in a minute.")
+        return
+    if channel.category_id != CATEGORIES["closed"]:
+        await channel.edit(category=category)
+    if _drop_from_calendar(str(channel.id)):
+        await update_calendar_message()
+    await interaction.followup.send(
+        f"🎉 Deal closed by {interaction.user.mention}. Fill in the fee and splits on the "
+        f"Revenue dashboard: {REVENUE_URL}")
 
-    # Try to auto-fill the address from Tickety bot history
+
+async def sync_closed_channels(guild) -> tuple[int, int]:
+    """Send every channel in Closed Deals to the dashboard. (sent, failed)."""
+    category = guild.get_channel(CATEGORIES["closed"])
+    if category is None:
+        return 0, 0
+    sent = failed = 0
+    for channel in category.text_channels:
+        result = await send_to_revenue(channel, closed_on=_closed_day(channel))
+        if result["status"] in (200, 201):
+            sent += 1
+        else:
+            failed += 1
+            print(f"syncclosed: {channel.name} failed: {result}")
+        await asyncio.sleep(0.5)
+    return sent, failed
+
+
+@client.tree.command(name="syncclosed", description="Add every Closed Deals channel to the Revenue dashboard (missing ones only)")
+async def slash_syncclosed(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    prefill_address = await find_address_in_channel(channel)
-
-    recorder = interaction.user.display_name
-
+    sent, failed = await sync_closed_channels(interaction.guild)
     await interaction.followup.send(
-        "**Close Deal — Step 1 of 3**\nFill in the address and assignment fee:",
-        ephemeral=True,
-    )
-    # We can't send a modal after followup, so we send a view that opens the modal
-    await interaction.followup.send(
-        "👇 Click below to open the deal form:",
-        view=_OpenStep1View(prefill_address, cid, channel.name, recorder),
-        ephemeral=True,
-    )
+        f"✅ Checked {sent + failed} closed channels: {sent} on the dashboard"
+        + (f", {failed} failed (see the bot logs)." if failed else "."), ephemeral=True)
+
 
 
 @client.tree.command(name="panel", description="Post the Lead Status panel in this channel")
@@ -992,13 +670,20 @@ async def on_ready():
     client.add_view(LeadStatusView())
     client.add_view(ReminderSettingsView())
     client.add_view(CalendarManagerViewPersistent())
-    client.add_view(RecordDealView())
     # on_ready fires again after every reconnect; starting a running loop raises.
     if not nudge_check.is_running():
         nudge_check.start()
     if not refresh_calendar.is_running():
         refresh_calendar.start()
     print(f"✅ Logged in as {client.user}")
+    # Back-fill: every Closed Deals channel onto the Revenue dashboard. Runs on
+    # each start; the dashboard ignores channels it already has.
+    if not getattr(client, "_synced_closed", False):
+        client._synced_closed = True
+        guild = client.get_guild(GUILD_ID)
+        if guild:
+            sent, failed = await sync_closed_channels(guild)
+            print(f"   closed deals on the dashboard: {sent} ok, {failed} failed")
 
 
 client.run(TOKEN)
