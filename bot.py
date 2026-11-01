@@ -55,6 +55,7 @@ CARLOS_USER_ID = 1089701097867853865
 
 DEAL_WEBHOOK_TOKEN = os.environ.get("DEAL_WEBHOOK_TOKEN", "")
 DEAL_WEBHOOK_URL   = f"https://favoritehomebuyerkpi.up.railway.app/hooks/deal/{DEAL_WEBHOOK_TOKEN}"
+CONTRACT_WEBHOOK_URL = f"https://favoritehomebuyerkpi.up.railway.app/hooks/contract/{DEAL_WEBHOOK_TOKEN}"
 
 
 FARAH_PERMISSIONS = discord.PermissionOverwrite(
@@ -228,6 +229,9 @@ class ContractDatesModal(Modal, title="Enter Contract Dates"):
         await interaction.response.send_message(
             f"✅ Contract dates saved! Signed **{signed}** | Closes **{closing}**"
         )
+        # The Contracts tab on the dashboard. After the reply, so a slow
+        # dashboard can never make Discord time the form out.
+        asyncio.create_task(send_contract(interaction.channel, "dates", signed, closing))
 
 
 # ── Views ────────────────────────────────────────────────────────────────────
@@ -359,30 +363,62 @@ async def slash_addfarah(interaction: discord.Interaction):
 REVENUE_URL = "https://favoritehomebuyerkpi.up.railway.app/revenue"
 
 _ADDRESS_RE = re.compile(r"address of the property[^\n]*\n+\s*(.+)", re.IGNORECASE)
+_SELLER_RE  = re.compile(r"name of the seller[^\n]*\n+\s*(.+)", re.IGNORECASE)
 
 
-def _address_from_text(text: str) -> str:
-    m = _ADDRESS_RE.search(text or "")
+def _answer(regex, text: str) -> str:
+    m = regex.search(text or "")
     return m.group(1).strip().strip("*_` ").strip() if m else ""
 
 
-async def find_address_in_channel(channel) -> str:
-    """The property address from Tickety's opening message (text or embed),
-    falling back to the channel name ("1234-briarwood-dr" -> "1234 Briarwood Dr")."""
+def _address_from_text(text: str) -> str:
+    return _answer(_ADDRESS_RE, text)
+
+
+def lead_from_channel_name(name: str) -> dict:
+    """"lori-pumphrey-47-s-3rd-st-sharpsville-pa-16150-carlimmm" ->
+    seller "Lori Pumphrey", address "47 S 3rd St Sharpsville PA 16150".
+    The seller is the words before the house number; the address runs from
+    the house number to the ZIP (what follows the ZIP is the agent)."""
+    words = [w for w in name.replace("_", "-").split("-") if w]
+    first_num = next((i for i, w in enumerate(words) if w[0].isdigit()), None)
+    if first_num is None:
+        return {"seller": "", "address": " ".join(w.capitalize() for w in words)}
+    zips = [i for i, w in enumerate(words) if i > first_num and re.fullmatch(r"\d{5}", w)]
+    stop = zips[-1] + 1 if zips else len(words)
+    addr = words[first_num:stop]
+    if zips and len(addr) >= 2 and len(addr[-2]) == 2 and addr[-2].isalpha():
+        addr[-2] = addr[-2].upper()          # the state
+    fix = lambda w: w if w.isupper() else (w if w[0].isdigit() else w.capitalize())
+    return {"seller": " ".join(w.capitalize() for w in words[:first_num]),
+            "address": " ".join(fix(w) for w in addr)}
+
+
+async def read_lead(channel) -> dict:
+    """Address and seller name from Tickety's opening message (text or embed:
+    "1. Address of the Property" / "2. Name of the Seller"), falling back to
+    the channel name for whatever isn't found there."""
+    found = {"address": "", "seller": ""}
     try:
         async for msg in channel.history(limit=50, oldest_first=True):
-            found = _address_from_text(msg.content)
-            if not found:
-                for embed in msg.embeds:
-                    parts = [embed.description or ""] + [f"{f.name}\n{f.value}" for f in embed.fields]
-                    found = _address_from_text("\n".join(parts))
-                    if found:
-                        break
-            if found:
-                return found[:300]
+            texts = [msg.content or ""]
+            for embed in msg.embeds:
+                texts.append("\n".join([embed.description or ""]
+                                       + [f"{f.name}\n{f.value}" for f in embed.fields]))
+            for text in texts:
+                found["address"] = found["address"] or _answer(_ADDRESS_RE, text)
+                found["seller"] = found["seller"] or _answer(_SELLER_RE, text)
+            if found["address"] and found["seller"]:
+                break
     except Exception:
         pass
-    return " ".join(w.capitalize() for w in channel.name.replace("_", "-").split("-") if w)
+    fallback = lead_from_channel_name(channel.name)
+    return {"address": (found["address"] or fallback["address"])[:300],
+            "seller": (found["seller"] or fallback["seller"])[:120]}
+
+
+async def find_address_in_channel(channel) -> str:
+    return (await read_lead(channel))["address"]
 
 
 async def post_deal_webhook(payload: dict) -> dict:
@@ -405,6 +441,87 @@ def _closed_day(channel) -> str:
     if channel.last_message_id:
         when = discord.utils.snowflake_time(channel.last_message_id)
     return when.astimezone(TIMEZONE).date().isoformat()
+
+
+async def post_contract_webhook(payload: dict) -> dict:
+    if not DEAL_WEBHOOK_TOKEN:
+        return {"status": 0, "body": {"error": "DEAL_WEBHOOK_TOKEN is not set"}}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(CONTRACT_WEBHOOK_URL, json=payload,
+                                    timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                return {"status": resp.status, "body": await resp.json(content_type=None)}
+    except Exception as e:
+        return {"status": 0, "body": {"error": str(e)}}
+
+
+async def send_contract(channel, action: str, signed: str | None = None,
+                        closing: str | None = None) -> dict:
+    """Put this channel on the dashboard's Contracts tab.
+    action: "dates" (just entered), "entered" (moved into Under Contract),
+    "backfill" (start-up sweep), "dropped" (moved out, not closed)."""
+    payload = {"contract_id": str(channel.id), "action": action,
+               "channel_name": channel.name}
+    if action != "dropped":
+        payload.update(await read_lead(channel))
+        payload["signed"] = signed
+        payload["closing"] = closing
+    result = await post_contract_webhook(payload)
+    if result["status"] not in (200, 201):
+        print(f"contract {action} for {channel.name} failed: {result}")
+    return result
+
+
+_DATES_RE = re.compile(r"Contract dates saved! Signed \*\*(.+?)\*\* \| Closes \*\*(.+?)\*\*",
+                       re.IGNORECASE)
+
+
+async def dates_from_history(channel):
+    """(signed, closing) from the bot's own "Contract dates saved!" reply, newest first."""
+    try:
+        async for msg in channel.history(limit=200):
+            if msg.author.bot:
+                m = _DATES_RE.search(msg.content or "")
+                if m and parse_date(m.group(1)) and parse_date(m.group(2)):
+                    return m.group(1).strip(), m.group(2).strip()
+    except Exception:
+        pass
+    return None, None
+
+
+async def sync_contract_channels(guild) -> tuple[int, int]:
+    """Every Under Contract channel onto the Contracts tab, with its dates
+    (from the calendar, else from the channel's history - which also puts
+    them back on the Discord calendar). (sent, failed)."""
+    category = guild.get_channel(CATEGORIES["contract"])
+    if category is None:
+        return 0, 0
+    calendar_state.setdefault("contracts", {})
+    sent = failed = 0
+    restored = False
+    ids = []
+    for channel in category.text_channels:
+        cid = str(channel.id)
+        ids.append(cid)
+        saved = calendar_state["contracts"].get(cid)
+        signed, closing = (saved["signed"], saved["closing"]) if saved else await dates_from_history(channel)
+        if closing and not saved:
+            calendar_state["contracts"][cid] = {"name": channel.name, "signed": signed, "closing": closing}
+            restored = True
+        result = await send_contract(channel, "backfill", signed, closing)
+        if result["status"] in (200, 201):
+            sent += 1
+        else:
+            failed += 1
+        await asyncio.sleep(0.5)
+    if restored:
+        save_json(CALENDAR_FILE, calendar_state)
+        await update_calendar_message()
+    # Contracts on the dashboard whose channel left Under Contract while the
+    # bot was down. Only when the read worked: an empty list proves nothing.
+    if ids and not failed:
+        await post_contract_webhook({"action": "sync", "ids": ids})
+    return sent, failed
 
 
 async def send_to_revenue(channel, closed_on: str | None = None) -> dict:
@@ -430,10 +547,20 @@ def _drop_from_calendar(channel_id: str) -> bool:
 
 @client.event
 async def on_guild_channel_update(before, after):
-    """A channel dragged into Closed Deals gets the same treatment as /close."""
+    """Category changes. Into Closed Deals: same as /close. Into Under
+    Contract: onto the Contracts tab. Out of Under Contract to anywhere but
+    Closed Deals: off the Contracts tab (it fell through)."""
     if not isinstance(after, discord.TextChannel):
         return
-    if before.category_id == after.category_id or after.category_id != CATEGORIES["closed"]:
+    if before.category_id == after.category_id:
+        return
+    if after.category_id == CATEGORIES["contract"]:
+        await send_contract(after, "entered")
+        return
+    if before.category_id == CATEGORIES["contract"] and after.category_id != CATEGORIES["closed"]:
+        await send_contract(after, "dropped")
+        return
+    if after.category_id != CATEGORIES["closed"]:
         return
     if str(after.id) in channel_state.get("_sent", {}):
         return   # /close already sent it
@@ -493,6 +620,15 @@ async def slash_syncclosed(interaction: discord.Interaction):
         f"✅ Checked {sent + failed} closed channels: {sent} on the dashboard"
         + (f", {failed} failed (see the bot logs)." if failed else "."), ephemeral=True)
 
+
+
+@client.tree.command(name="synccontracts", description="Put every Under Contract channel on the dashboard's Contracts tab")
+async def slash_synccontracts(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    sent, failed = await sync_contract_channels(interaction.guild)
+    await interaction.followup.send(
+        f"✅ Checked {sent + failed} Under Contract channels: {sent} on the dashboard"
+        + (f", {failed} failed (see the bot logs)." if failed else "."), ephemeral=True)
 
 
 @client.tree.command(name="panel", description="Post the Lead Status panel in this channel")
@@ -684,6 +820,8 @@ async def on_ready():
         if guild:
             sent, failed = await sync_closed_channels(guild)
             print(f"   closed deals on the dashboard: {sent} ok, {failed} failed")
+            sent, failed = await sync_contract_channels(guild)
+            print(f"   contracts on the dashboard: {sent} ok, {failed} failed")
 
 
 client.run(TOKEN)
