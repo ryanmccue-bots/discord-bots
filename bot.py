@@ -322,7 +322,9 @@ async def move_channel(interaction: discord.Interaction, category_key: str, labe
     channel_state[str(channel.id)] = {
         "category_id": cat_id,
         "since": time.time(),
-        "last_nudge": 0
+        "last_nudge": 0,
+        # Keep the channel's Reminders On/Off choice across stage moves.
+        "reminders_off": channel_state.get(str(channel.id), {}).get("reminders_off", False),
     }
     save_json(STATE_FILE, channel_state)
 
@@ -554,6 +556,12 @@ async def on_guild_channel_update(before, after):
         return
     if before.category_id == after.category_id:
         return
+    # A channel dragged to another category (not via the buttons) starts its
+    # new stage fresh too: one reminder 24 hours in, reminder setting kept.
+    prev = channel_state.get(str(after.id), {})
+    channel_state[str(after.id)] = {"category_id": after.category_id, "since": time.time(),
+                                    "last_nudge": 0, "reminders_off": prev.get("reminders_off", False)}
+    save_json(STATE_FILE, channel_state)
     if after.category_id == CATEGORIES["contract"]:
         await send_contract(after, "entered")
         return
@@ -755,8 +763,12 @@ async def nudge_check():
             continue
         if data.get("reminders_off"):
             continue
-        trigger_time = max(since, last_nudge) if last_nudge else since
-        if now - trigger_time >= interval:
+        # One reminder per stage, never a daily repeat. Moving the channel to
+        # another stage starts fresh (last_nudge back to 0), so the next stage
+        # gets its own single reminder 24 hours in.
+        if last_nudge:
+            continue
+        if now - since >= interval:
             channel = client.get_channel(int(channel_id))
             if channel:
                 await channel.send(f"⏰ {NUDGES[cat_id]}")
